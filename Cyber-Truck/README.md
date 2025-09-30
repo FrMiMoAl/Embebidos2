@@ -24,4 +24,7 @@ Mini camioneta tipo Cybertruck controlada con Raspberry Pi Pico W + Raspberry Pi
 
 ## 🚀 Cómo ejecutar
 
- Ejecutando puej no seas flojo
+ Ejecutando puej no seas flojo. mentira.
+
+    " It is only dilusional until it works"
+    - Ferrari
