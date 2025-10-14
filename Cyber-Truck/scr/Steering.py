@@ -9,15 +9,24 @@
 
 from machine import Pin, PWM
 
-class Steering:
-    def __init__(self, pin, freq=50):
-        self.pwm = PWM(Pin(pin))
-        self.pwm.freq(freq)
-        self.MIN = 1638   # 0.5 ms
-        self.MAX = 8192   # 2.5 ms
-        self.angle(90)    # centro por defecto
+FREQ   = 50      
+MIN_US = 500     
+MAX_US = 2500    
 
-    def angle(self, deg):
-        deg = max(0, min(180, int(deg)))
-        duty = int(self.MIN + (deg / 180.0) * (self.MAX - self.MIN))
-        self.pwm.duty_u16(duty)
+def pwm_from_pin(pin, freq=FREQ):
+    pwm = PWM(Pin(pin))
+    pwm.freq(freq)
+    return pwm
+
+def angle_to_duty(angle, min_us=MIN_US, max_us=MAX_US, freq=FREQ):
+    angle = max(0, min(180, angle))
+    pulse = min_us + (max_us - min_us) * (angle / 180.0)
+    period_us = 1_000_000 // freq
+    return int(pulse * 65535 // period_us)
+
+def servo_write(pwm, angle, min_us=MIN_US, max_us=MAX_US, freq=FREQ):
+    pwm.duty_u16(angle_to_duty(angle, min_us, max_us, freq))
+
+def servo_deinit(pwm):
+    pwm.deinit()
+
