@@ -4,65 +4,98 @@
 #
 # =============================================
 
-
-# Integra Steering, Motores, USonic y UARTHandler
-
-from Steering import Steering
-from Motore import DCMotor
-from USonic import USonic
-from UARTHandler import UARTHandler
+from ultrasonido import Ultrasonido
+from servo import pwm_from_pin, servo_write, servo_deinit
+from machine import Pin, PWM, UART
 import time
 
-# Configuración de pines (ajusta según tu wiring)
-MOTOR_A_PWM, MOTOR_A_IN1, MOTOR_A_IN2 = 0, 1, 2
-MOTOR_B_PWM, MOTOR_B_IN1, MOTOR_B_IN2 = 3, 4, 5
-SERVO_PIN = 15
-TRIG_PIN, ECHO_PIN = 10, 11
+uart = UART(1, baudrate=115200, tx=4, rx=5)
+sensor = Ultrasonido(trig_pin=19, echo_pin=18, timeout_us=30000)
+p_servo = pwm_from_pin(15)
 
-# Inicialización
-motorA = DCMotor(MOTOR_A_PWM, MOTOR_A_IN1, MOTOR_A_IN2)
-motorB = DCMotor(MOTOR_B_PWM, MOTOR_B_IN1, MOTOR_B_IN2)
-steer = Steering(SERVO_PIN)
-sonic = USonic(TRIG_PIN, ECHO_PIN)
-uart = UARTHandler()
+velocidad = 0
+sel = "N"
+msgg = f"Pared"
 
-uart.send("BOOT OK")
+def ajustar_velocidad(dist, s):
+    if dist < 4: 
+        uart.write((msgg + "\n").encode())
+        return 0
+    if dist < 20: 
+        return int(s * (dist/20))
+    return s
 
-reporting = False
-last_report = time.time()
+# Motores
+AIN1, AIN2, PWMA = Pin(21, Pin.OUT), Pin(20, Pin.OUT), PWM(Pin(28))
+BIN1, BIN2, PWMB = Pin(22, Pin.OUT), Pin(26, Pin.OUT), PWM(Pin(27))
+PWMA.freq(1000); PWMB.freq(1000)
+
+def motorA(s):
+    AIN1.value(s>0); AIN2.value(s<0)
+    PWMA.duty_u16(int(max(0,min(65535,abs(s)*655))))  # s: 0..100 aprox.
+
+def motorB(s):
+    BIN1.value(s>0); BIN2.value(s<0)
+    PWMB.duty_u16(int(max(0,min(65535,abs(s)*655))))
+
+def stop():
+    motorA(0); motorB(0)
+
+
+PRINT_PERIOD_MS = 200
+last_print = time.ticks_ms()
 
 while True:
-    cmd = uart.read_command()
-    if cmd:
-        if cmd.lower().startswith("motora:"):
-            val = int(cmd.split(":",1)[1])
-            motorA.set_speed(val)
-            uart.send(f"OK motora {val}")
-        elif cmd.lower().startswith("motorb:"):
-            val = int(cmd.split(":",1)[1])
-            motorB.set_speed(val)
-            uart.send(f"OK motorb {val}")
-        elif cmd.lower().startswith("steer:"):
-            ang = int(cmd.split(":",1)[1])
-            steer.angle(ang)
-            uart.send(f"OK steer {ang}")
-        elif cmd.lower() in ("distance?","dist?"):
-            d = sonic.distance_cm()
-            if d: uart.send(f"DIST:{d:.2f}cm")
-            else: uart.send("DIST:ERR")
-        elif cmd.lower() == "report:on":
-            reporting = True
-            uart.send("REPORT:ON")
-        elif cmd.lower() == "report:off":
-            reporting = False
-            uart.send("REPORT:OFF")
+    if uart.any():
+        raw = uart.readline()
+        if raw:
+            if isinstance(raw, (bytes, bytearray, memoryview)):
+                line = bytes(raw).decode('utf-8', 'ignore').strip()
+            else:
+                line = raw.strip()
+            # Ver lo recibido en consola
+            #print("RX:", line)
+            if line.startswith("S="):
+                try: velocidad = int(line.split("=", 1)[1])
+                except: pass
+            elif line in ("A","B","X","Y","N"):
+                sel = line
+
+    # Medición y control
+    d = sensor.distancia_cm(samples=3)
+    v = ajustar_velocidad(d, velocidad)
+
+    if sel=="A":
+        motorA(v)
+        motorB(0)
+        servo_write(p_servo, 20)
+    elif sel=="B":
+        motorA(0)
+        motorB(v)
+        servo_write(p_servo, 70)
+    elif sel=="X":
+        motorA(v)
+        motorB(v)
+        servo_write(p_servo, 50)
+    elif sel=="Y":
+        motorA(-v)
+        motorB(-v)
+        servo_write(p_servo, 50)
+    else:
+        stop()
+
+    # --- Mostrar en pantalla (consola USB/Thonny) y enviar por UART ---
+    now = time.ticks_ms()
+    if time.ticks_diff(now, last_print) >= PRINT_PERIOD_MS:
+        if d >= 0:
+            msg = f"DIST: {d:.1f} cm | SPEED: {v} | SEL: {sel}"
+            #msg=". "
         else:
-            uart.send("UNKNOWN_CMD")
+            msg = f"DIST: -- (timeout) | SPEED: {v} | SEL: {sel}"
+            #msg=". "
+        print(msg)  # => visible en la consola del Pico
+        # si también quieres verlo en la Raspberry por el mismo UART:
+        #uart.write((msg + "\n").encode())
+        last_print = now
 
-    if reporting and (time.time() - last_report) >= 1.0:
-        d = sonic.distance_cm()
-        if d: uart.send(f"DIST:{d:.2f}cm")
-        else: uart.send("DIST:ERR")
-        last_report = time.time()
-
-    time.sleep(0.01)
+    time.sleep(0.05)
