@@ -90,23 +90,23 @@ def main():
     threading.Thread(target=serial_reader_thread, args=(ser,), daemon=True).start()
     controller = MyController(interface="/dev/input/js0", connecting_using_ds4drv=False)
 
-    def cb_l3_up(value):
+    def cb_r3_up(value):
         velocidad = read_speed_from_file()
         enviarInfo(ser, velocidad, "X")   # ambos adelante
     
-    def cb_l3_down(value):
+    def cb_r3_down(value):
         velocidad = read_speed_from_file()
         enviarInfo(ser, velocidad, "Y")   # ambos atrás
     
-    def cb_l3_left(value):
+    def cb_r3_left(value):
         velocidad = read_speed_from_file()
         enviarInfo(ser, velocidad, "A")   # motor A
     
-    def cb_l3_right(value):
+    def cb_r3_right(value):
         velocidad = read_speed_from_file()
         enviarInfo(ser, velocidad, "B")   # motor B
     
-    def cb_l3_release():
+    def cb_r3_release():
         enviarInfo(ser, 0, "N")
 
     def cb_r2_press(value):
@@ -120,11 +120,11 @@ def main():
         print("velocidad normal")
 
 
-    controller.register_callback('l3_up', cb_l3_up)
-    controller.register_callback('l3_down', cb_l3_down)
-    controller.register_callback('l3_left', cb_l3_left)
-    controller.register_callback('l3_right', cb_l3_right)
-    controller.register_callback('l3_release', cb_l3_release)
+    controller.register_callback('r3_up', cb_r3_up)
+    controller.register_callback('r3_down', cb_r3_down)
+    controller.register_callback('r3_left', cb_r3_left)
+    controller.register_callback('r3_right', cb_r3_right)
+    controller.register_callback('r3_release', cb_r3_release)
 
     controller.register_callback('r2_press', cb_r2_press)
     controller.register_callback('r2_release', cb_r2_release)
