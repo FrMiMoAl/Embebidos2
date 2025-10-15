@@ -1,15 +1,9 @@
 """
-==================================
-
-                    PIPICO
-
-==================================
 Modelos de Comportamiento - Raspberry Pi Pico W
-Define los diferentes modos de operación del vehículo
+Define los diferentes modos de operación del vehículo (Sin threads)
 """
-from config import SensorConfig
+
 import utime
-import _thread
 
 class BaseModel:
     """Clase base para todos los modelos"""
@@ -46,7 +40,7 @@ class ModelA(BaseModel):
     def __init__(self, hardware):
         super().__init__(hardware)
         self.state = "IDLE"  # IDLE, MOVING_FORWARD, ROTATING, TURNING
-        self.obstacle_distance = SensorConfig.OBSTACLE_DISTANCE_CM  # cm
+        self.obstacle_distance = 20  # cm
         self.forward_speed = 50  # velocidad base
         self.rotation_start_time = 0
         self.rotation_duration = 0
@@ -54,9 +48,7 @@ class ModelA(BaseModel):
         self.turn_angle_remaining = 0
         self.turn_direction = 'RIGHT'
         self.turn_speed = 30
-        
-        # Para giros no bloqueantes
-        self.turn_lock = _thread.allocate_lock()
+        self.turn_start_time = 0
     
     def start(self):
         """Iniciar Modelo A"""
@@ -64,6 +56,7 @@ class ModelA(BaseModel):
         self.state = "MOVING_FORWARD"
         self.hardware.set_headlights('LOW')
         self.hardware.set_brake_lights(False)
+        print("Model A: Starting autonomous movement")
     
     def update(self):
         """Loop principal del Modelo A"""
@@ -80,7 +73,7 @@ class ModelA(BaseModel):
         if self.state == "MOVING_FORWARD":
             # Avanzar hasta encontrar obstáculo
             if distance > 0 and distance < self.obstacle_distance:
-                print(f"Obstacle detected at {distance}cm. Rotating 180°")
+                print(f"Obstacle detected at {distance:.1f}cm. Rotating 180°")
                 self.state = "ROTATING"
                 self.hardware.stop_motors()
                 self.hardware.set_brake_lights(True)
@@ -92,7 +85,6 @@ class ModelA(BaseModel):
                 
                 # Iniciar rotación en lugar
                 self.hardware.set_motor_speed(40, -40)  # Giro a la derecha
-                self.hardware.set_steering_angle(-20)  # Girar la dirección 
             else:
                 # Continuar avanzando
                 self.hardware.set_motor_speed(self.forward_speed, self.forward_speed)
@@ -117,24 +109,23 @@ class ModelA(BaseModel):
         angle: grados a girar (positivo)
         direction: 'LEFT' o 'RIGHT'
         """
-        with self.turn_lock:
-            if self.turn_active:
-                print("Turn already in progress")
-                return False
-            
-            self.turn_active = True
-            self.turn_angle_remaining = abs(angle)
-            self.turn_direction = direction.upper()
-            self.turn_start_time = utime.ticks_ms()
-            
-            # Activar señal direccional
-            if self.turn_direction == 'LEFT':
-                self.hardware.set_turn_signals('LEFT', True)
-            else:
-                self.hardware.set_turn_signals('RIGHT', True)
-            
-            print(f"Starting turn: {angle}° {direction}")
-            return True
+        if self.turn_active:
+            print("Turn already in progress")
+            return False
+        
+        self.turn_active = True
+        self.turn_angle_remaining = abs(angle)
+        self.turn_direction = direction.upper()
+        self.turn_start_time = utime.ticks_ms()
+        
+        # Activar señal direccional
+        if self.turn_direction == 'LEFT':
+            self.hardware.set_turn_signals('LEFT', True)
+        else:
+            self.hardware.set_turn_signals('RIGHT', True)
+        
+        print(f"Starting turn: {angle}° {direction}")
+        return True
     
     def _update_turn(self):
         """Actualizar estado del giro no bloqueante"""
@@ -165,6 +156,7 @@ class ModelA(BaseModel):
     def set_speed(self, speed):
         """Establecer velocidad de avance"""
         self.forward_speed = max(0, min(100, speed))
+        print(f"Model A: Speed set to {self.forward_speed}")
     
     def stop(self):
         """Detener Modelo A"""
@@ -172,6 +164,7 @@ class ModelA(BaseModel):
         super().stop()
         self.hardware.set_turn_signals('OFF', False)
         self.hardware.set_headlights('OFF')
+        self.state = "IDLE"
 
 
 class ModelB(BaseModel):
@@ -204,11 +197,13 @@ class ModelB(BaseModel):
         """Control manual de velocidad"""
         self.current_speed = speed
         self.hardware.set_motor_speed(speed, speed)
+        print(f"Model B: Speed set to {speed}")
     
     def set_steering(self, angle):
         """Control manual de dirección"""
         self.current_steering = angle
         self.hardware.set_steering_angle(angle)
+        print(f"Model B: Steering set to {angle}°")
     
     def turn(self, angle, direction):
         """Girar N grados"""
@@ -260,4 +255,4 @@ class ModelD(BaseModel):
         if not self.running:
             return
         # Por implementar
-        pass
+        pass3

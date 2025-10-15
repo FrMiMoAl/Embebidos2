@@ -1,69 +1,143 @@
 """
-Controlador Raspberry Pi 4 - Ejemplo de Comunicación con Pico W
-Este es un ejemplo básico de cómo la RPi4 puede controlar la Pico W via UART
+==================================
+            RASPBERRY PI 4
+==================================
+
+Controlador Raspberry Pi 4 - Comunicación con Pico W via UART
+Sistema de Control Mejorado para Vehículo Embebido
 """
 
 import serial
 import time
 import threading
 import queue
+import sys
+import os
 
 class PicoController:
-    """Interfaz de control para Raspberry Pi Pico W via UART"""
+    """Interfaz de control mejorada para Raspberry Pi Pico W via UART"""
     
-    def __init__(self, port='/dev/ttyACM1', baudrate=115200):
+    def __init__(self, port='/dev/ttyACM0', baudrate=115200, timeout=1):
         """
         Inicializar conexión UART
         
         Args:
-            port: Puerto serial (/dev/ttyS0 en RPi4)
+            port: Puerto serial (ttyACM0 para USB, ttyAMA0 para GPIO)
             baudrate: Velocidad de comunicación (115200)
+            timeout: Timeout de lectura en segundos
         """
         self.port = port
         self.baudrate = baudrate
+        self.timeout = timeout
         self.serial = None
         self.running = False
+        self.connected = False
+        
+        # Queues para mensajes
         self.message_queue = queue.Queue()
         self.response_callbacks = {}
+        
+        # Estadísticas
+        self.messages_sent = 0
+        self.messages_received = 0
+        self.errors = 0
+        
+        # Thread de lectura
+        self.read_thread = None
         
         # Inicializar conexión
         self.connect()
     
     def connect(self):
-        """Establecer conexión serial"""
-        try:
-            self.serial = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                timeout=1,
-                write_timeout=1
-            )
-            print(f"✓ Conectado a Pico W en {self.port}")
-            time.sleep(2)  # Esperar estabilización
-            
-            # Iniciar thread de lectura
-            self.running = True
-            self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
-            self.read_thread.start()
-            
-            return True
-        except Exception as e:
-            print(f"✗ Error conectando: {e}")
-            return False
+        """Establecer conexión serial con reintentos"""
+        max_retries = 3
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"Intentando conectar a {self.port}... (intento {attempt + 1}/{max_retries})")
+                
+                self.serial = serial.Serial(
+                    port=self.port,
+                    baudrate=self.baudrate,
+                    timeout=self.timeout,
+                    write_timeout=self.timeout
+                )
+                
+                self.connected = True
+                self.running = True
+                
+                print(f"✓ Conectado a Pico W en {self.port} @ {self.baudrate} baud")
+                
+                # Limpiar buffer
+                self.serial.reset_input_buffer()
+                self.serial.reset_output_buffer()
+                
+                # Esperar estabilización
+                time.sleep(2)
+                
+                # Iniciar thread de lectura
+                self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
+                self.read_thread.start()
+                
+                # Verificar conexión con PING
+                if self.ping():
+                    print("✓ Comunicación verificada con PING")
+                    return True
+                else:
+                    print("⚠️  PING falló, pero conexión establecida")
+                    return True
+                
+            except serial.SerialException as e:
+                print(f"✗ Error en intento {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    print(f"   Reintentando en {retry_delay} segundos...")
+                    time.sleep(retry_delay)
+                else:
+                    print(f"✗ No se pudo conectar después de {max_retries} intentos")
+                    self.connected = False
+                    return False
+            except Exception as e:
+                print(f"✗ Error inesperado: {e}")
+                self.connected = False
+                return False
+        
+        return False
     
     def disconnect(self):
-        """Cerrar conexión"""
+        """Cerrar conexión de forma segura"""
+        print("\nCerrando conexión...")
         self.running = False
+        
+        # Esperar a que termine el thread de lectura
+        if self.read_thread and self.read_thread.is_alive():
+            self.read_thread.join(timeout=2)
+        
+        # Cerrar puerto serial
         if self.serial and self.serial.is_open:
-            self.serial.close()
-            print("✓ Desconectado de Pico W")
+            try:
+                self.serial.close()
+                print("✓ Desconectado de Pico W")
+            except Exception as e:
+                print(f"Error cerrando puerto: {e}")
+        
+        self.connected = False
+        
+        # Mostrar estadísticas
+        print(f"\nEstadísticas:")
+        print(f"  Mensajes enviados: {self.messages_sent}")
+        print(f"  Mensajes recibidos: {self.messages_received}")
+        print(f"  Errores: {self.errors}")
     
     def _read_loop(self):
         """Thread para leer mensajes continuamente"""
         buffer = ""
+        consecutive_errors = 0
+        max_consecutive_errors = 10
+        
         while self.running:
             try:
-                if self.serial and self.serial.in_waiting:
+                if self.serial and self.serial.is_open and self.serial.in_waiting:
                     data = self.serial.read(self.serial.in_waiting).decode('utf-8', errors='ignore')
                     buffer += data
                     
@@ -72,12 +146,30 @@ class PicoController:
                         line, buffer = buffer.split('\n', 1)
                         line = line.strip()
                         if line:
+                            self.messages_received += 1
                             self.message_queue.put(line)
                             self._process_message(line)
+                    
+                    # Resetear contador de errores consecutivos
+                    consecutive_errors = 0
                 
                 time.sleep(0.01)  # 10ms
+                
+            except serial.SerialException as e:
+                consecutive_errors += 1
+                self.errors += 1
+                print(f"✗ Error de lectura serial: {e}")
+                
+                if consecutive_errors >= max_consecutive_errors:
+                    print(f"✗ Demasiados errores consecutivos ({consecutive_errors}). Deteniendo lectura.")
+                    self.connected = False
+                    break
+                
+                time.sleep(0.5)
+                
             except Exception as e:
-                print(f"Error en lectura: {e}")
+                self.errors += 1
+                print(f"✗ Error inesperado en lectura: {e}")
                 time.sleep(0.1)
     
     def _process_message(self, message):
@@ -86,35 +178,94 @@ class PicoController:
         
         # Llamar callbacks registrados
         parts = message.split(':')
-        if parts[0] in self.response_callbacks:
-            callback = self.response_callbacks[parts[0]]
-            callback(message)
+        if len(parts) > 0 and parts[0] in self.response_callbacks:
+            try:
+                callback = self.response_callbacks[parts[0]]
+                callback(message)
+            except Exception as e:
+                print(f"✗ Error en callback: {e}")
     
-    def send_command(self, command):
+    def send_command(self, command, wait_response=False, timeout=2):
         """
         Enviar comando a Pico W
         
         Args:
             command: String del comando (sin newline)
+            wait_response: Si True, espera confirmación
+            timeout: Tiempo máximo de espera para respuesta
+        
+        Returns:
+            True si se envió correctamente, False en caso contrario
         """
-        if not self.serial or not self.serial.is_open:
+        if not self.serial or not self.serial.is_open or not self.connected:
             print("✗ Serial no conectado")
             return False
         
         try:
             cmd = f"{command}\n"
             self.serial.write(cmd.encode('utf-8'))
+            self.messages_sent += 1
             print(f"→ RPi4: {command}")
+            
+            if wait_response:
+                start_time = time.time()
+                while time.time() - start_time < timeout:
+                    if not self.message_queue.empty():
+                        response = self.message_queue.get()
+                        return response
+                    time.sleep(0.05)
+                print(f"⚠️  Timeout esperando respuesta para: {command}")
+                return None
+            
             return True
+            
+        except serial.SerialTimeoutException:
+            print(f"✗ Timeout enviando comando: {command}")
+            self.errors += 1
+            return False
         except Exception as e:
             print(f"✗ Error enviando comando: {e}")
+            self.errors += 1
             return False
     
     def register_callback(self, message_type, callback):
-        """Registrar callback para tipo de mensaje"""
+        """
+        Registrar callback para tipo de mensaje
+        
+        Args:
+            message_type: Tipo de mensaje (ej: 'ALERT', 'STATUS', etc.)
+            callback: Función a llamar cuando se reciba el mensaje
+        """
         self.response_callbacks[message_type] = callback
+        print(f"✓ Callback registrado para: {message_type}")
+    
+    def unregister_callback(self, message_type):
+        """Eliminar callback registrado"""
+        if message_type in self.response_callbacks:
+            del self.response_callbacks[message_type]
+            print(f"✓ Callback eliminado para: {message_type}")
     
     # ============== Comandos de Alto Nivel ==============
+    
+    def ping(self, timeout=2):
+        """
+        Verificar conexión con Pico W
+        
+        Returns:
+            True si recibe PONG, False en caso contrario
+        """
+        self.send_command("PING")
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                msg = self.message_queue.get(timeout=0.1)
+                if "PONG" in msg:
+                    return True
+            except queue.Empty:
+                pass
+        
+        return False
     
     def switch_model(self, model):
         """
@@ -122,7 +273,14 @@ class PicoController:
         
         Args:
             model: 'A', 'B', 'C', o 'D'
+        
+        Returns:
+            True si el cambio fue exitoso
         """
+        if model not in ['A', 'B', 'C', 'D']:
+            print(f"✗ Modelo inválido: {model}")
+            return False
+        
         return self.send_command(f"SWITCH_MODEL:{model}")
     
     def turn(self, angle, direction):
@@ -132,7 +290,18 @@ class PicoController:
         Args:
             angle: Grados a girar (0-360)
             direction: 'LEFT' o 'RIGHT'
+        
+        Returns:
+            True si el comando fue enviado
         """
+        if not 0 <= angle <= 360:
+            print(f"✗ Ángulo inválido: {angle}")
+            return False
+        
+        if direction.upper() not in ['LEFT', 'RIGHT']:
+            print(f"✗ Dirección inválida: {direction}")
+            return False
+        
         return self.send_command(f"TURN:{angle}:{direction}")
     
     def set_speed(self, speed):
@@ -141,7 +310,14 @@ class PicoController:
         
         Args:
             speed: -100 a 100 (negativo = reversa)
+        
+        Returns:
+            True si el comando fue enviado
         """
+        if not -100 <= speed <= 100:
+            print(f"✗ Velocidad inválida: {speed}")
+            return False
+        
         return self.send_command(f"SPEED:{speed}")
     
     def control_lights(self, light_type, state):
@@ -151,11 +327,23 @@ class PicoController:
         Args:
             light_type: 'BRAKE', 'TURN_LEFT', 'TURN_RIGHT', 'TURN_BOTH', 'HIGH', 'LOW'
             state: 'ON' u 'OFF'
+        
+        Returns:
+            True si el comando fue enviado
         """
+        valid_types = ['BRAKE', 'TURN_LEFT', 'TURN_RIGHT', 'TURN_BOTH', 'HIGH', 'LOW']
+        if light_type not in valid_types:
+            print(f"✗ Tipo de luz inválido: {light_type}")
+            return False
+        
+        if state.upper() not in ['ON', 'OFF']:
+            print(f"✗ Estado inválido: {state}")
+            return False
+        
         return self.send_command(f"LIGHTS:{light_type}:{state}")
     
     def stop(self):
-        """Detener vehículo"""
+        """Detener vehículo inmediatamente"""
         return self.send_command("STOP")
     
     def request_status(self):
@@ -176,19 +364,56 @@ class PicoController:
             return self.message_queue.get(timeout=timeout)
         except queue.Empty:
             return None
+    
+    def is_connected(self):
+        """Verificar si está conectado"""
+        return self.connected and self.serial and self.serial.is_open
 
 
-# ============== Ejemplos de Uso ==============
+# ============== Funciones de Utilidad ==============
+
+def find_pico_port():
+    """Buscar puerto de la Pico W automáticamente"""
+    possible_ports = [
+        '/dev/ttyACM0',  # USB en Linux
+        '/dev/ttyACM1',
+        '/dev/ttyUSB0',
+        '/dev/ttyUSB1',
+        '/dev/ttyAMA0',  # GPIO UART en RPi
+        '/dev/serial0',  # Alias en RPi
+        'COM3',          # Windows
+        'COM4',
+        'COM5',
+    ]
+    
+    print("Buscando puerto de Pico W...")
+    for port in possible_ports:
+        if os.path.exists(port):
+            print(f"  Encontrado: {port}")
+            return port
+    
+    print("  No se encontró ningún puerto")
+    return None
+
+
+# ============== Ejemplos de Uso Mejorados ==============
 
 def example_basic_control():
-    """Ejemplo: Control básico del vehículo"""
+    """Ejemplo 1: Control básico del vehículo"""
     print("\n" + "="*60)
     print("EJEMPLO 1: Control Básico")
     print("="*60)
     
-    # Crear controlador
-    controller = PicoController()
-    time.sleep(1)
+    # Buscar puerto automáticamente
+    port = find_pico_port()
+    if not port:
+        port = input("Ingresa el puerto manualmente (ej: /dev/ttyACM0): ")
+    
+    controller = PicoController(port=port)
+    
+    if not controller.is_connected():
+        print("✗ No se pudo conectar. Abortando.")
+        return
     
     try:
         # Encender luces bajas
@@ -227,18 +452,25 @@ def example_basic_control():
         
     except KeyboardInterrupt:
         print("\n\n✗ Interrumpido por usuario")
+        controller.stop()
+    except Exception as e:
+        print(f"\n✗ Error: {e}")
     finally:
         controller.disconnect()
 
 
 def example_autonomous_mode():
-    """Ejemplo: Modo autónomo con Modelo A"""
+    """Ejemplo 2: Modo autónomo con Modelo A"""
     print("\n" + "="*60)
     print("EJEMPLO 2: Modo Autónomo (Modelo A)")
     print("="*60)
     
-    controller = PicoController()
-    time.sleep(1)
+    port = find_pico_port() or '/dev/ttyACM0'
+    controller = PicoController(port=port)
+    
+    if not controller.is_connected():
+        print("✗ No se pudo conectar. Abortando.")
+        return
     
     # Callback para alertas de obstáculos
     def obstacle_alert(message):
@@ -264,9 +496,10 @@ def example_autonomous_mode():
         # Dejar funcionar 30 segundos
         print("\n3. Modo autónomo activo por 30 segundos...")
         print("   El vehículo evitará obstáculos automáticamente")
+        print("   Presiona Ctrl+C para detener antes\n")
         
         for i in range(30):
-            print(f"   Tiempo restante: {30-i}s", end='\r')
+            print(f"   Tiempo restante: {30-i:2d}s", end='\r')
             time.sleep(1)
         
         print("\n\n4. Deteniendo modo autónomo...")
@@ -278,208 +511,159 @@ def example_autonomous_mode():
     except KeyboardInterrupt:
         print("\n\n✗ Interrumpido por usuario")
         controller.stop()
+    except Exception as e:
+        print(f"\n✗ Error: {e}")
     finally:
         controller.disconnect()
 
 
-def example_keyboard_control():
-    """Ejemplo: Control por teclado"""
+def example_manual_control():
+    """Ejemplo 3: Control manual paso a paso"""
     print("\n" + "="*60)
-    print("EJEMPLO 3: Control por Teclado")
+    print("EJEMPLO 3: Control Manual Interactivo")
     print("="*60)
-    print("\nControles:")
-    print("  W/S: Adelante/Atrás")
-    print("  A/D: Izquierda/Derecha")
-    print("  Q/E: Velocidad -/+")
-    print("  L: Alternar luces")
-    print("  Space: Frenar")
-    print("  1-4: Cambiar modelo")
-    print("  ESC: Salir")
-    print("\nPresiona Enter para comenzar...")
-    input()
     
-    controller = PicoController()
-    time.sleep(1)
+    port = find_pico_port() or '/dev/ttyACM0'
+    controller = PicoController(port=port)
     
-    # Cambiar a Modelo B
-    controller.switch_model('B')
-    time.sleep(1)
-    
-    current_speed = 0
-    lights_on = False
-    steering_angle = 0
+    if not controller.is_connected():
+        print("✗ No se pudo conectar. Abortando.")
+        return
     
     try:
-        import sys
-        import tty
-        import termios
+        # Cambiar a Modelo B
+        controller.switch_model('B')
+        time.sleep(1)
         
-        # Configurar terminal para lectura sin buffer
-        old_settings = termios.tcgetattr(sys.stdin)
-        tty.setcbreak(sys.stdin.fileno())
+        print("\nComandos disponibles:")
+        print("  w - Avanzar")
+        print("  s - Retroceder")
+        print("  a - Girar izquierda")
+        print("  d - Girar derecha")
+        print("  x - Detener")
+        print("  l - Toggle luces")
+        print("  1-4 - Cambiar modelo")
+        print("  q - Salir")
+        print("\nPresiona Enter después de cada comando")
         
-        print("\n✓ Control por teclado activo\n")
+        lights_on = False
         
         while True:
-            # Leer tecla (no bloqueante)
-            if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
-                key = sys.stdin.read(1)
-                
-                if key == '\x1b':  # ESC
-                    break
-                
-                elif key.lower() == 'w':  # Adelante
-                    current_speed = min(100, current_speed + 10)
-                    controller.set_speed(current_speed)
-                    print(f"Velocidad: {current_speed}%")
-                
-                elif key.lower() == 's':  # Atrás
-                    current_speed = max(-100, current_speed - 10)
-                    controller.set_speed(current_speed)
-                    print(f"Velocidad: {current_speed}%")
-                
-                elif key.lower() == 'a':  # Izquierda
-                    steering_angle = max(-45, steering_angle - 15)
-                    controller.turn(abs(steering_angle), 'LEFT')
-                    print(f"Dirección: {steering_angle}°")
-                
-                elif key.lower() == 'd':  # Derecha
-                    steering_angle = min(45, steering_angle + 15)
-                    controller.turn(abs(steering_angle), 'RIGHT')
-                    print(f"Dirección: {steering_angle}°")
-                
-                elif key.lower() == 'q':  # Velocidad -
-                    current_speed = max(-100, current_speed - 5)
-                    controller.set_speed(current_speed)
-                
-                elif key.lower() == 'e':  # Velocidad +
-                    current_speed = min(100, current_speed + 5)
-                    controller.set_speed(current_speed)
-                
-                elif key.lower() == 'l':  # Toggle luces
-                    lights_on = not lights_on
-                    controller.control_lights('HIGH', 'ON' if lights_on else 'OFF')
-                    print(f"Luces: {'ON' if lights_on else 'OFF'}")
-                
-                elif key == ' ':  # Frenar
-                    current_speed = 0
-                    steering_angle = 0
-                    controller.stop()
-                    print("FRENADO")
-                
-                elif key in ['1', '2', '3', '4']:
-                    model = chr(ord('A') + int(key) - 1)
-                    controller.switch_model(model)
-                    print(f"Modelo: {model}")
+            cmd = input("\nComando: ").strip().lower()
             
-            time.sleep(0.05)
+            if cmd == 'q':
+                break
+            elif cmd == 'w':
+                controller.set_speed(50)
+            elif cmd == 's':
+                controller.set_speed(-50)
+            elif cmd == 'a':
+                controller.turn(30, 'LEFT')
+            elif cmd == 'd':
+                controller.turn(30, 'RIGHT')
+            elif cmd == 'x':
+                controller.stop()
+            elif cmd == 'l':
+                lights_on = not lights_on
+                controller.control_lights('HIGH', 'ON' if lights_on else 'OFF')
+            elif cmd in ['1', '2', '3', '4']:
+                model = chr(ord('A') + int(cmd) - 1)
+                controller.switch_model(model)
+            else:
+                print("Comando no reconocido")
         
-        # Restaurar configuración de terminal
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-        
-    except ImportError:
-        print("✗ Módulos de teclado no disponibles")
-        print("   Usa los otros ejemplos o instala: pip install select")
-    except Exception as e:
-        print(f"✗ Error: {e}")
-    finally:
         controller.stop()
-        controller.disconnect()
-
-
-def example_event_based_switching():
-    """Ejemplo: Cambio automático entre modelos por eventos"""
-    print("\n" + "="*60)
-    print("EJEMPLO 4: Cambio Automático de Modelos")
-    print("="*60)
-    
-    controller = PicoController()
-    time.sleep(1)
-    
-    current_model = 'B'
-    obstacle_count = 0
-    
-    # Callback para cambiar modelo según obstáculos
-    def handle_obstacle(message):
-        nonlocal current_model, obstacle_count
-        parts = message.split(':')
-        if len(parts) >= 3:
-            distance = float(parts[2])
-            
-            if distance < 15:
-                obstacle_count += 1
-                print(f"\n⚠️  Obstáculo cercano: {distance} cm (#{obstacle_count})")
-                
-                # Cambiar a Modelo A después de 3 obstáculos
-                if obstacle_count >= 3 and current_model != 'A':
-                    print("→ Cambiando a Modelo A (autónomo)")
-                    controller.switch_model('A')
-                    current_model = 'A'
-                    obstacle_count = 0
-    
-    controller.register_callback('ALERT', handle_obstacle)
-    
-    try:
-        # Iniciar en Modelo B
-        print("\n1. Iniciando en Modelo B (control manual)...")
-        controller.switch_model('B')
-        controller.control_lights('LOW', 'ON')
-        time.sleep(2)
-        
-        print("\n2. Avanzando...")
-        print("   Si detecta 3 obstáculos, cambiará a Modelo A automáticamente")
-        controller.set_speed(40)
-        
-        # Monitorear por 60 segundos
-        for i in range(60):
-            print(f"\n   Tiempo: {i+1}s | Modelo actual: {current_model} | Obstáculos: {obstacle_count}", end='\r')
-            time.sleep(1)
-            
-            # Simular cambio manual después de 30s si sigue en A
-            if i == 30 and current_model == 'A':
-                print("\n\n→ Volviendo a Modelo B manualmente...")
-                controller.switch_model('B')
-                current_model = 'B'
-                obstacle_count = 0
-                controller.set_speed(40)
-        
-        print("\n\n3. Finalizando...")
-        controller.stop()
-        controller.control_lights('LOW', 'OFF')
-        
-        print("\n✓ Ejemplo completado")
+        print("\n✓ Control manual finalizado")
         
     except KeyboardInterrupt:
         print("\n\n✗ Interrumpido por usuario")
         controller.stop()
+    except Exception as e:
+        print(f"\n✗ Error: {e}")
+    finally:
+        controller.disconnect()
+
+
+def example_diagnostics():
+    """Ejemplo 4: Diagnóstico y prueba de conexión"""
+    print("\n" + "="*60)
+    print("EJEMPLO 4: Diagnóstico del Sistema")
+    print("="*60)
+    
+    port = find_pico_port() or '/dev/ttyACM0'
+    controller = PicoController(port=port)
+    
+    if not controller.is_connected():
+        print("✗ No se pudo conectar. Abortando.")
+        return
+    
+    try:
+        print("\n1. Prueba de PING...")
+        if controller.ping():
+            print("   ✓ PING exitoso")
+        else:
+            print("   ✗ PING falló")
+        
+        print("\n2. Solicitando estado...")
+        controller.request_status()
+        time.sleep(1)
+        
+        print("\n3. Probando cambio de modelos...")
+        for model in ['A', 'B', 'C', 'D']:
+            print(f"   Cambiando a Modelo {model}...")
+            controller.switch_model(model)
+            time.sleep(1)
+        
+        print("\n4. Probando luces...")
+        for light in ['HIGH', 'LOW', 'BRAKE', 'TURN_LEFT', 'TURN_RIGHT']:
+            print(f"   {light} ON")
+            controller.control_lights(light, 'ON')
+            time.sleep(0.5)
+            print(f"   {light} OFF")
+            controller.control_lights(light, 'OFF')
+            time.sleep(0.5)
+        
+        print("\n5. Prueba de velocidad (sin movimiento real)...")
+        for speed in [0, 25, 50, 75, 100, 0]:
+            print(f"   Velocidad: {speed}%")
+            controller.set_speed(speed)
+            time.sleep(0.5)
+        
+        controller.stop()
+        print("\n✓ Diagnóstico completado")
+        
+    except KeyboardInterrupt:
+        print("\n\n✗ Interrumpido por usuario")
+    except Exception as e:
+        print(f"\n✗ Error: {e}")
     finally:
         controller.disconnect()
 
 
 def interactive_menu():
-    """Menú interactivo para seleccionar ejemplos"""
+    """Menú interactivo mejorado"""
     while True:
         print("\n" + "="*60)
-        print("EJEMPLOS DE CONTROL - Raspberry Pi 4 → Pico W")
+        print("CONTROL RASPBERRY PI 4 → PICO W")
         print("="*60)
         print("\n1. Control Básico")
         print("2. Modo Autónomo (Modelo A)")
-        print("3. Control por Teclado")
-        print("4. Cambio Automático de Modelos")
+        print("3. Control Manual Interactivo")
+        print("4. Diagnóstico del Sistema")
         print("0. Salir")
         print("\n" + "="*60)
         
         try:
-            choice = input("\nSelecciona un ejemplo: ").strip()
+            choice = input("\nSelecciona una opción: ").strip()
             
             if choice == '1':
                 example_basic_control()
             elif choice == '2':
                 example_autonomous_mode()
             elif choice == '3':
-                example_keyboard_control()
+                example_manual_control()
             elif choice == '4':
-                example_event_based_switching()
+                example_diagnostics()
             elif choice == '0':
                 print("\n✓ Saliendo...")
                 break
@@ -498,22 +682,29 @@ def interactive_menu():
 if __name__ == "__main__":
     print("""
     ╔════════════════════════════════════════════════════════════╗
-    ║   Control Raspberry Pi 4 → Pico W                          ║
+    ║   Control Raspberry Pi 4 → Pico W (Mejorado)              ║
     ║   Sistema de Control para Vehículo Embebido                ║
     ╚════════════════════════════════════════════════════════════╝
     """)
     
+    print("\nVerificando sistema...")
+    
     # Verificar puerto serial
-    import os
-    if not os.path.exists('/dev/ttyACM0'):
-        print("⚠️  Advertencia: /dev/ttyACM0 no encontrado")
-        print("   Asegúrate de haber habilitado UART en /boot/config.txt")
-        print("   Agrega: enable_uart=1")
-        print()
+    port = find_pico_port()
+    if port:
+        print(f"✓ Puerto encontrado: {port}")
+    else:
+        print("⚠️  No se encontró puerto automáticamente")
+        print("   Verifica que la Pico W esté conectada")
+        print("   Puedes especificar el puerto manualmente en los ejemplos")
+    
+    print()
     
     try:
         interactive_menu()
     except Exception as e:
         print(f"\n✗ Error fatal: {e}")
+        import traceback
+        traceback.print_exc()
     
     print("\n¡Hasta luego!\n")

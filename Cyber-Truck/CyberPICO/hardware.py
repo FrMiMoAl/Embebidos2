@@ -17,22 +17,15 @@ import utime
 class HardwareController:
     def __init__(self):
         # Motores TB6612 ; LOS PINES SE CONFIGURAN EN "config.py"
-        self.motor_left_BIN1 = Pin(PinConfig.MOTOR_LEFT_BIN1, Pin.OUT)
-        self.motor_left_BIN2 = Pin(PinConfig.MOTOR_LEFT_BIN2, Pin.OUT)
+        self.motor_left_BIN1 = Pin(PinConfig.MOTOR_LEFT_BIN1)
+        self.motor_left_BIN2 = Pin(PinConfig.MOTOR_LEFT_BIN2)
         self.motor_left_pwm = PWM(Pin(PinConfig.MOTOR_LEFT_PWM))
-
-        self.motor_right_AIN1 = Pin(PinConfig.MOTOR_RIGHT_AIN1, Pin.OUT)
-        self.motor_right_AIN2 = Pin(PinConfig.MOTOR_RIGHT_AIN2, Pin.OUT)
-        self.motor_right_pwm = PWM(Pin(PinConfig.MOTOR_RIGHT_PWM))
-
         self.motor_left_pwm.freq(MotorConfig.PWM_FREQUENCY)
+
+        self.motor_right_AIN1 = Pin(PinConfig.MOTOR_RIGHT_AIN1)
+        self.motor_right_AIN2 = Pin(PinConfig.MOTOR_RIGHT_AIN2)
+        self.motor_right_pwm = PWM(Pin(PinConfig.MOTOR_RIGHT_PWM))
         self.motor_right_pwm.freq(MotorConfig.PWM_FREQUENCY)
-
-
-        # Configurar frecuencia PWM para motores
-        for motor in [self.motor_left_BIN1, self.motor_left_BIN2,
-                      self.motor_right_AIN1, self.motor_right_AIN2]:
-            motor.value(0)
 
         
         # Servomotor de dirección - CALIBRAR PLS
@@ -78,23 +71,32 @@ class HardwareController:
         if left_speed > 0:
             self.motor_left_BIN1.value(1)
             self.motor_left_BIN2.value(0)
+            self.motor_left_pwm.duty_u16(int(max(0,min(65535,abs(left_speed)*65535/100))))
         elif left_speed < 0:
             self.motor_left_BIN1.value(0)
             self.motor_left_BIN2.value(1)
+            self.motor_left_pwm.duty_u16(int(max(0,min(65535,abs(left_speed)*65535/100))))
+
         else:
             self.motor_left_BIN1.value(0)
             self.motor_left_BIN2.value(0)
+
+            self.motor_left_pwm.duty_u16(int(max(0,min(65535,abs(0)*65535/100))))
 
         # Motor derecho
         if right_speed > 0:
             self.motor_right_AIN1.value(1)
             self.motor_right_AIN2.value(0)
+            self.motor_right_pwm.duty_u16(int(max(0,min(65535,abs(right_speed)*65535/100))))
+
         elif right_speed < 0:
             self.motor_right_AIN1.value(0)
             self.motor_right_AIN2.value(1)
+            self.motor_right_pwm.duty_u16(int(max(0,min(65535,abs(right_speed)*65535/100))))
         else:
             self.motor_right_AIN1.value(0)
             self.motor_right_AIN2.value(0)
+            self.motor_right_pwm.duty_u16(int(max(0,min(65535,abs(0)*65535/100))))
 
     def stop_motors(self):
         """Detener todos los motores"""
@@ -113,7 +115,7 @@ class HardwareController:
         pulse_width = 1500 + (angle * 500 / 40)  # 1000-2000 microsegundos
         duty = int((pulse_width / 20000) * 65535)
         self.steering_servo.duty_u16(duty)
-    
+            
     def center_steering(self):
         self.set_steering_angle(ServoConfig.CENTER_ANGLE)
     
