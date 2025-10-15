@@ -105,30 +105,34 @@ def calcular_instruccion(valor_x, valor_y):
     
     - Y < 0: Adelante (X)
     - Y > 0: Atrás (Y)
-    - X < 0: Gira Izquierda (A o B, dependiendo de la convención de tu robot)
-    - X > 0: Gira Derecha (A o B, dependiendo de la convención de tu robot)
+    - X < 0: Giro Izquierdo (A o B)
+    - X > 0: Giro Derecho (A o B)
     - Cerca de 0: Parada (N)
     """
     
-    # Si la velocidad es 0, la instrucción debe ser N
+    # Si estamos en la zona muerta de ambos ejes, la instrucción es N
     if abs(valor_y) < DEADZONE and abs(valor_x) < DEADZONE:
         return "N"
         
-    # Priorizar la dirección principal (Y)
-    if valor_y < -DEADZONE:
-        # Movimiento Adelante
-        # Podrías implementar giro más complejo aquí (ej. control diferencial)
-        return "X" # Ambos adelante
-    elif valor_y > DEADZONE:
-        # Movimiento Atrás
-        return "Y" # Ambos atrás
+    # Si hay suficiente movimiento en Y (Avance/Retroceso)
+    if abs(valor_y) > DEADZONE:
+        # Aquí puedes implementar una lógica de mezcla si tu firmware lo permitiera.
+        # Ya que solo puedes enviar una instrucción, priorizamos el avance/retroceso.
+        # La instrucción A/B en este esquema podría ser usada para girar en su lugar
+        # del movimiento X/Y, pero seguiremos la convención básica:
+        
+        if valor_y < 0:
+            return "X" # Adelante
+        else:
+            return "Y" # Atrás
+            
+    # Si Y está en la zona muerta, pero X no (Giro puro)
     elif abs(valor_x) > DEADZONE:
-        # Movimiento lateral (giro puro)
         if valor_x < 0:
-            # Giro a la izquierda (solo motor A) - Convención asumida para giro.
+            # Giro a la izquierda (Motor A)
             return "A" 
         else:
-            # Giro a la derecha (solo motor B) - Convención asumida para giro.
+            # Giro a la derecha (Motor B)
             return "B" 
             
     return "N"
@@ -138,8 +142,8 @@ def calcular_instruccion(valor_x, valor_y):
 def cb_move_left_joystick(x, y):
     """
     Callback llamado continuamente por pyPS4Controller con los valores (lx, ly).
+    LX para dirección y LY para avance/retroceso.
     """
-    # Los valores son típicamente enteros de -32767 a 32767
     
     # 1. Calcular Velocidad (basado en Y)
     velocidad = calcular_velocidad(y)
@@ -147,13 +151,14 @@ def cb_move_left_joystick(x, y):
     # 2. Calcular Instrucción (basado en X e Y)
     instruccion = calcular_instruccion(x, y)
     
-    # 3. Enviar Comando
+    # 3. Enviar Comando y manejar la parada
     if velocidad > 0 or instruccion != "N":
-        # Solo enviar si hay movimiento o una instrucción específica (para giros puros)
+        # Enviar movimiento o giro
         enviarInfo(controller.ser, velocidad, instruccion)
+        controller._stopped = False # Reset flag de parada
         print(f"JOY ({x},{y}) → V:{velocidad} I:{instruccion}", end='\r')
-    elif instruccion == "N" and velocidad == 0:
-        # Esto asegura que la parada se envíe una vez al volver al centro
+    else:
+        # El joystick está centrado (instruccion N y velocidad 0)
         if not hasattr(controller, '_stopped') or not controller._stopped:
             enviarInfo(controller.ser, 0, "N")
             controller._stopped = True
@@ -177,17 +182,16 @@ def cb_r2_release():
 # --- FUNCIÓN PRINCIPAL ---
 
 def main():
-    global MAX_VELOCIDAD_BASE # Asegurar que la función use el valor global inicializado
+    global MAX_VELOCIDAD_BASE
     
     ser = serial.Serial(PORT, BAUD, timeout=0.2)
-    # Adjuntar el objeto serial al controlador para usarlo en los callbacks
     controller = MyController(interface="/dev/input/js0", connecting_using_ds4drv=False)
     controller.ser = ser
-    controller._stopped = False # Flag para rastrear el estado de detención
+    controller._stopped = False 
 
     threading.Thread(target=serial_reader_thread, args=(ser,), daemon=True).start()
 
-    # Parada inicial para asegurar que los motores no se muevan al arrancar
+    # Parada inicial
     enviarInfo(ser, 0, "N")
     print("✅ Estado inicial: Motores detenidos. Esperando entrada del mando...")
 
