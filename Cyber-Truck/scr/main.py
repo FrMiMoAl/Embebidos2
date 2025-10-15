@@ -1,101 +1,139 @@
-# =============================================
-#
-#                       MAIN
-#
-# =============================================
-
-from ultrasonido import Ultrasonido
-from servo import pwm_from_pin, servo_write, servo_deinit
-from machine import Pin, PWM, UART
+import sys
+import os
 import time
+from pathlib import Path
+import threading
 
-uart = UART(1, baudrate=115200, tx=4, rx=5)
-sensor = Ultrasonido(trig_pin=19, echo_pin=18, timeout_us=30000)
-p_servo = pwm_from_pin(15)
+# Ensure local vendored packages in ./libs are importable (pyserial, pyPS4Controller, etc.)
+ROOT = os.path.dirname(__file__)
+LIBS_DIR = os.path.join(ROOT, "libs")
+if os.path.isdir(LIBS_DIR) and LIBS_DIR not in sys.path:
+    sys.path.insert(0, LIBS_DIR)
 
-velocidad = 0
-sel = "N"
-msgg = f"Pared"
+try:
+    import serial
+except Exception as e:
+    print("\u26a0\ufe0f Warning: could not import 'serial' (pyserial).",
+          "If you don't have pyserial installed system-wide,",
+          "ensure the ./libs folder contains pyserial or install it with pip.")
+    raise
 
-def ajustar_velocidad(dist, s):
-    if dist < 4: 
-        uart.write((msgg + "\n").encode())
-        return 0
-    if dist < 20: 
-        return int(s * (dist/20))
-    return s
+from controller import MyController
 
-# Motores
-AIN1, AIN2, PWMA = Pin(21, Pin.OUT), Pin(20, Pin.OUT), PWM(Pin(28))
-BIN1, BIN2, PWMB = Pin(22, Pin.OUT), Pin(26, Pin.OUT), PWM(Pin(27))
-PWMA.freq(1000); PWMB.freq(1000)
-
-def motorA(s):
-    AIN1.value(s>0); AIN2.value(s<0)
-    PWMA.duty_u16(int(max(0,min(65535,abs(s)*655))))  # s: 0..100 aprox.
-
-def motorB(s):
-    BIN1.value(s>0); BIN2.value(s<0)
-    PWMB.duty_u16(int(max(0,min(65535,abs(s)*655))))
-
-def stop():
-    motorA(0); motorB(0)
+PORT = "/dev/serial0"
+BAUD = 115200
+FILE = Path("/home/raspberry/Documents/puerto/control.txt")
 
 
-PRINT_PERIOD_MS = 200
-last_print = time.ticks_ms()
 
-while True:
-    if uart.any():
-        raw = uart.readline()
-        if raw:
-            if isinstance(raw, (bytes, bytearray, memoryview)):
-                line = bytes(raw).decode('utf-8', 'ignore').strip()
-            else:
-                line = raw.strip()
-            # Ver lo recibido en consola
-            #print("RX:", line)
-            if line.startswith("S="):
-                try: velocidad = int(line.split("=", 1)[1])
-                except: pass
-            elif line in ("A","B","X","Y","N"):
-                sel = line
+def clamp_speed(v):
+    try:
+        v = float(v)
+    except:
+        return 80  # default
+    v = int(round(v))
+    if v < 0: v = 0
+    if v > 100: v = 100
+    return v
 
-    # Medición y control
-    d = sensor.distancia_cm(samples=3)
-    v = ajustar_velocidad(d, velocidad)
+def send_speed(ser, speed):
+    speed = clamp_speed(speed)
+    msg = f"S={speed}\n".encode("utf-8")
+    ser.write(msg)
+    ser.flush()
+    print(">> SPEED:", speed)
 
-    if sel=="A":
-        motorA(v)
-        motorB(0)
-        servo_write(p_servo, 20)
-    elif sel=="B":
-        motorA(0)
-        motorB(v)
-        servo_write(p_servo, 70)
-    elif sel=="X":
-        motorA(v)
-        motorB(v)
-        servo_write(p_servo, 50)
-    elif sel=="Y":
-        motorA(-v)
-        motorB(-v)
-        servo_write(p_servo, 50)
-    else:
-        stop()
+def speed_from_joystick(value):
+    """
+    Convierte el valor analógico del joystick (-32767..32767)
+    a 0..100 tomando magnitud.
+    """
+    if value is None:
+        return 80
+    # normalizamos por magnitud
+    mag = abs(int(value))
+    return int(round(100 * mag / 32767.0))
 
-    # --- Mostrar en pantalla (consola USB/Thonny) y enviar por UART ---
-    now = time.ticks_ms()
-    if time.ticks_diff(now, last_print) >= PRINT_PERIOD_MS:
-        if d >= 0:
-            msg = f"DIST: {d:.1f} cm | SPEED: {v} | SEL: {sel}"
-            #msg=". "
-        else:
-            msg = f"DIST: -- (timeout) | SPEED: {v} | SEL: {sel}"
-            #msg=". "
-        print(msg)  # => visible en la consola del Pico
-        # si también quieres verlo en la Raspberry por el mismo UART:
-        #uart.write((msg + "\n").encode())
-        last_print = now
+VALID_SEL = {"A", "B", "X", "Y", "N"}
+def send_sel(ser, sel):
+    """Envía selección A/B/X/Y/N (una letra y \\n)."""
+    sel = (sel or "N").strip()[:1].upper()
+    if sel not in VALID_SEL:
+        sel = "N"
+    ser.write(f"{sel}\n".encode("utf-8"))
+    ser.flush()
+    print(">> SEL:", sel)
 
-    time.sleep(0.05)
+def enviarInfo(ser, velocidad, instruccion):
+    send_speed(ser, velocidad)
+    time.sleep(0.02)
+    send_sel(ser, instruccion)
+
+def serial_reader_thread(ser):
+    while True:
+        try:
+            data = ser.readline()
+            if data:
+                print("<<", data.decode(errors="ignore").strip())
+        except Exception as e:
+            print("Serial read error:", e)
+            time.sleep(0.2)
+
+def read_speed_from_file():
+    if FILE.exists():
+        return clamp_speed(FILE.read_text().strip())
+    return 80
+
+
+def main():
+    ser = serial.Serial(PORT, BAUD, timeout=0.2)
+    threading.Thread(target=serial_reader_thread, args=(ser,), daemon=True).start()
+    controller = MyController(interface="/dev/input/js0", connecting_using_ds4drv=False)
+
+    def cb_l3_up(value):
+        velocidad = read_speed_from_file()
+        enviarInfo(ser, velocidad, "X")   # ambos adelante
+    
+    def cb_l3_down(value):
+        velocidad = read_speed_from_file()
+        enviarInfo(ser, velocidad, "Y")   # ambos atrás
+    
+    def cb_l3_left(value):
+        velocidad = read_speed_from_file()
+        enviarInfo(ser, velocidad, "A")   # motor A
+    
+    def cb_l3_right(value):
+        velocidad = read_speed_from_file()
+        enviarInfo(ser, velocidad, "B")   # motor B
+    
+    def cb_l3_release():
+        enviarInfo(ser, 0, "N")
+
+    def cb_r2_press(value):
+        velocidad_max = 100
+        enviarInfo(ser, velocidad_max, "X")  # ambos motores adelante
+        print(f"🚀 R2 presionado → velocidad {velocidad_max}%")
+
+    def cb_r2_release():
+        velocidad_normal = read_speed_from_file()
+        enviarInfo(ser, velocidad_normal, "N")
+        print("velocidad normal")
+
+
+    controller.register_callback('l3_up', cb_l3_up)
+    controller.register_callback('l3_down', cb_l3_down)
+    controller.register_callback('l3_left', cb_l3_left)
+    controller.register_callback('l3_right', cb_l3_right)
+    controller.register_callback('l3_release', cb_l3_release)
+
+    controller.register_callback('r2_press', cb_r2_press)
+    controller.register_callback('r2_release', cb_r2_release)
+
+    print("🎮 Escuchando mando PS4…")
+    try:
+        controller.start_listening()  # bloqueante
+    except KeyboardInterrupt:
+        print("\nSaliendo…")
+
+if __name__ == "__main__":
+    main()
