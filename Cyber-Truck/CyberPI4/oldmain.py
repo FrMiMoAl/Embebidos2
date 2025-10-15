@@ -5,12 +5,6 @@ import time
 from pathlib import Path
 import threading
 
-# Ensure local vendored packages in ./libs are importable (pyserial, pyPS4Controller, etc.)
-ROOT = os.path.dirname(__file__)
-LIBS_DIR = os.path.join(ROOT, "libs")
-if os.path.isdir(LIBS_DIR) and LIBS_DIR not in sys.path:
-    sys.path.insert(0, LIBS_DIR)
-
 try:
     import serial
 except Exception as e:
@@ -18,8 +12,6 @@ except Exception as e:
           "If you don't have pyserial installed system-wide,",
           "ensure the ./libs folder contains pyserial or install it with pip.")
     raise
-
-from controller import MyController
 
 PORT = "/dev/serial0"
 BAUD = 115200
@@ -44,16 +36,6 @@ def send_speed(ser, speed):
     ser.flush()
     print(">> SPEED:", speed)
 
-def speed_from_joystick(value):
-    """
-    Convierte el valor analógico del joystick (-32767..32767)
-    a 0..100 tomando magnitud.
-    """
-    if value is None:
-        return 80
-    # normalizamos por magnitud
-    mag = abs(int(value))
-    return int(round(100 * mag / 32767.0))
 
 VALID_SEL = {"A", "B", "X", "Y", "N"}
 def send_sel(ser, sel):
@@ -135,6 +117,26 @@ def main():
         controller.start_listening()  # bloqueante
     except KeyboardInterrupt:
         print("\nSaliendo…")
+
+# Modify the system so the vehicle moves forward until it finds an object. When
+# that happens, the system rotates 180° in place and continues moving forward.
+
+def modelA():
+
+    while True:
+        # Mover hacia adelante
+        enviarInfo(ser, 100, "X")
+        time.sleep(0.1)
+
+        # Comprobar si hay un objeto delante
+        if detectar_objeto():
+            print("🚧 Objeto detectado, girando 180°...")
+            enviarInfo(ser, 0, "N")  # Detener motores
+            time.sleep(0.5)
+            enviarInfo(ser, 100, "Y")  # Girar 180°
+            time.sleep(1)
+            enviarInfo(ser, 100, "X")  # Continuar hacia adelante
+
 
 if __name__ == "__main__":
     main()
