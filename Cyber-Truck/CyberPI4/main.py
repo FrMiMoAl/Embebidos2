@@ -11,7 +11,7 @@ import queue
 class PicoController:
     """Interfaz de control para Raspberry Pi Pico W via UART"""
     
-    def __init__(self, port='/dev/ttyS0', baudrate=115200):
+    def __init__(self, port='/dev/ttyACM1', baudrate=115200):
         """
         Inicializar conexión UART
         
@@ -505,8 +505,8 @@ if __name__ == "__main__":
     
     # Verificar puerto serial
     import os
-    if not os.path.exists('/dev/ttyAMA0'):
-        print("⚠️  Advertencia: /dev/ttyAMA0 no encontrado")
+    if not os.path.exists('/dev/ttyACM0'):
+        print("⚠️  Advertencia: /dev/ttyACM0 no encontrado")
         print("   Asegúrate de haber habilitado UART en /boot/config.txt")
         print("   Agrega: enable_uart=1")
         print()
