@@ -11,12 +11,12 @@ import queue
 class PicoController:
     """Interfaz de control para Raspberry Pi Pico W via UART"""
     
-    def __init__(self, port='/dev/ttyAMA0', baudrate=115200):
+    def __init__(self, port='/dev/ttyS0', baudrate=115200):
         """
         Inicializar conexión UART
         
         Args:
-            port: Puerto serial (/dev/ttyAMA0 en RPi4)
+            port: Puerto serial (/dev/ttyS0 en RPi4)
             baudrate: Velocidad de comunicación (115200)
         """
         self.port = port
