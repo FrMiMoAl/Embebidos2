@@ -1,270 +1,174 @@
-"""
-==================================
-                PIPICO
-==================================
-
-Sistema de Control - Raspberry Pi Pico W
-Auto Embebido con control modular (Sin threads)
-"""
-
 from machine import Pin, PWM, UART
 import utime
-from models import ModelA, ModelB, ModelC, ModelD
-from hardware import HardwareController
 
-class SimpleModel:
-    """Modelo de prueba básico para pruebas y depuración"""
-    def __init__(self, hardware):
-        self.hardware = hardware
-        self.active = False
+FREQ   = 50      
+MIN_US = 500     
+MAX_US = 2500 
 
-    def start(self):
-        self.active = True
-        print("Simple Model started.")
-    
-    def update(self):
-        if self.active:
-            print("Updating Simple Model.")
-    
-    def stop(self):
-        self.active = False
-        print("Simple Model stopped.")
+class PinConfig:
+    UART_TX = 0
+    UART_RX = 1
+    UART_BAUDRATE = 115200
 
-class VehicleController:
-    def __init__(self):
-        # Inicializar hardware
-        self.hardware = HardwareController()
-        
-        # Inicializar UART para comunicación con Raspberry Pi 4
-        self.uart = UART(0, baudrate=115200, tx=Pin(0), rx=Pin(1))
-        
-        # Modelos disponibles (usamos el SimpleModel por ahora)
-        self.models = {
-            'A': SimpleModel(self.hardware),
-            'B': SimpleModel(self.hardware),
-            'C': SimpleModel(self.hardware),
-            'D': SimpleModel(self.hardware)
-        }
-        
-        # Modelo actual
-        self.current_model = None
-        self.active_model_name = None
-        self.running = True
-        
-        # Buffer para lectura UART
-        self.uart_buffer = ""
-        
-        # Telemetría
-        self.last_telemetry_time = utime.ticks_ms()
-        self.telemetry_interval = 1000  # 1 segundo
-        
-        print("Vehicle Controller initialized")
-    
-    def switch_model(self, model_name):
-        """Cambiar entre modelos de forma segura"""
-        if model_name not in self.models:
-            print(f"Error: Model {model_name} not found")
-            self.send_response(f"ERROR:MODEL_NOT_FOUND:{model_name}")
-            return False
-        
-        # Detener modelo actual
-        if self.current_model:
-            print(f"Stopping model {self.active_model_name}")
-            self.current_model.stop()
-            self.hardware.stop_all()
-        
-        # Activar nuevo modelo
-        self.current_model = self.models[model_name]
-        self.active_model_name = model_name
-        
-        # Iniciar nuevo modelo
-        if hasattr(self.current_model, 'start'):
-            self.current_model.start()
-        
-        print(f"Switched to Model {model_name}")
-        
-        # Enviar confirmación a Raspberry Pi 4
-        self.send_response(f"MODEL_CHANGED:{model_name}")
-        
-        return True
-    
-    def send_response(self, message):
-        """Enviar respuesta a Raspberry Pi 4 via UART"""
-        try:
-            self.uart.write(f"{message}\n")
-        except Exception as e:
-            print(f"Error sending response: {e}")
-    
-    def parse_command(self, command):
-        """Parsear comandos recibidos via UART"""
-        command = command.strip()
-        if not command:
-            return
-        
-        parts = command.split(':')
-        cmd_type = parts[0]
-        
-        print(f"Processing command: {cmd_type}")
-        
-        if cmd_type == "SWITCH_MODEL":
-            if len(parts) >= 2:
-                model_name = parts[1]
-                self.switch_model(model_name)
-        
-        elif cmd_type == "TURN":
-            # Comando: TURN:angle:direction
-            if len(parts) >= 3 and self.current_model:
-                try:
-                    angle = float(parts[1])
-                    direction = parts[2]  # 'LEFT' o 'RIGHT'
-                    if hasattr(self.current_model, 'turn'):
-                        self.current_model.turn(angle, direction)
-                        self.send_response(f"TURN_EXECUTED:{angle}:{direction}")
-                    else:
-                        self.send_response("ERROR:TURN_NOT_SUPPORTED")
-                except ValueError:
-                    self.send_response("ERROR:INVALID_TURN_PARAMETERS")
-        
-        elif cmd_type == "LIGHTS":
-            # Comando: LIGHTS:type:state
-            if len(parts) >= 3:
-                light_type = parts[1]
-                state = parts[2]
-                self.hardware.control_lights(light_type, state)
-                self.send_response(f"LIGHTS_SET:{light_type}:{state}")
-        
-        elif cmd_type == "SPEED":
-            # Comando: SPEED:value
-            if len(parts) >= 2 and self.current_model:
-                try:
-                    speed = float(parts[1])
-                    if hasattr(self.current_model, 'set_speed'):
-                        self.current_model.set_speed(speed)
-                        self.send_response(f"SPEED_SET:{speed}")
-                    else:
-                        # Control directo de hardware si el modelo no lo soporta
-                        self.hardware.set_motor_speed(speed, speed)
-                        self.send_response(f"SPEED_SET:{speed}")
-                except ValueError:
-                    self.send_response("ERROR:INVALID_SPEED")
-        
-        elif cmd_type == "STOP":
-            if self.current_model:
-                self.current_model.stop()
-            self.hardware.stop_all()
-            self.send_response("STOPPED")
-        
-        elif cmd_type == "STATUS":
-            self.send_status()
-        
-        elif cmd_type == "PING":
-            # Comando para verificar conexión
-            self.send_response("PONG")
-        
-        else:
-            self.send_response(f"ERROR:UNKNOWN_COMMAND:{cmd_type}")
-    
-    def send_status(self):
-        """Enviar estado actual del sistema"""
-        distance = self.hardware.get_distance()
-        model_name = self.active_model_name if self.active_model_name else 'NONE'
-        self.send_response(f"STATUS:{model_name}:{distance:.1f}:{self.running}")
-    
-    def process_uart(self):
-        """Procesar datos recibidos por UART (no bloqueante)"""
-        if self.uart.any():
-            # Leer datos disponibles
-            data = self.uart.read()
-            if data:
-                try:
-                    self.uart_buffer += data.decode('utf-8', errors='ignore')
-                except:
-                    print("Error decoding UART data")
-                    return
-                
-                # Procesar líneas completas
-                while '\n' in self.uart_buffer:
-                    line, self.uart_buffer = self.uart_buffer.split('\n', 1)
-                    line = line.strip()
-                    if line:
-                        print(f"Received: {line}")
-                        try:
-                            self.parse_command(line)
-                        except Exception as e:
-                            print(f"Error parsing command: {e}")
-                            self.send_response(f"ERROR:PARSE_ERROR:{e}")
-    
-    def send_telemetry(self):
-        """Enviar telemetría periódica"""
-        current_time = utime.ticks_ms()
-        if utime.ticks_diff(current_time, self.last_telemetry_time) >= self.telemetry_interval:
-            self.last_telemetry_time = current_time
-            
-            # Enviar alertas de obstáculos
-            if self.current_model:
-                distance = self.hardware.get_distance()
-                if 0 < distance < 20:  # Objeto cercano
-                    self.send_response(f"ALERT:OBSTACLE:{distance:.1f}")
-    
-    def run(self):
-        """Loop principal del controlador (sin threads)"""
-        print("Vehicle Controller running. Waiting for commands...")
-        self.send_response("SYSTEM_READY")
-        
-        # Loop principal
-        loop_count = 0
-        while self.running:
-            try:
-                # 1. Procesar comandos UART (alta prioridad)
-                self.process_uart()
-                
-                # 2. Actualizar modelo actual
-                if self.current_model and hasattr(self.current_model, 'update'):
-                    try:
-                        self.current_model.update()
-                    except Exception as e:
-                        print(f"Error in model update: {e}")
-                        self.send_response(f"ERROR:MODEL_EXCEPTION:{e}")
-                
-                # 3. Enviar telemetría periódica
-                self.send_telemetry()
-                
-                # 4. Debug: mostrar info cada 100 iteraciones (~5 segundos)
-                loop_count += 1
-                if loop_count >= 100:
-                    if self.active_model_name:
-                        print(f"Running: Model {self.active_model_name}")
-                    else:
-                        print("Running: No model selected")
-                    loop_count = 0
-                
-                # Pequeño delay para no saturar la CPU
-                utime.sleep_ms(50)
-                
-            except Exception as e:
-                print(f"Error in main loop: {e}")
-                utime.sleep_ms(100)
-    
-    def shutdown(self):
-        """Apagar sistema de forma segura"""
-        print("Shutting down...")
-        self.running = False
-        if self.current_model:
-            self.current_model.stop()
-        self.hardware.stop_all()
-        self.send_response("SYSTEM_SHUTDOWN")
+    MOTOR_LEFT_BIN1 = 20
+    MOTOR_LEFT_BIN2 = 21
+    MOTOR_LEFT_PWM = 22
 
-# Punto de entrada
-if __name__ == "__main__":
-    controller = None
+    MOTOR_RIGHT_AIN1 = 18
+    MOTOR_RIGHT_AIN2 = 17
+    MOTOR_RIGHT_PWM = 16
+
+    STEERING_SERVO = 8
+
+    ULTRASONIC_TRIGGER = 26
+    ULTRASONIC_ECHO = 27
+
+class SensorConfig:
+    ULTRASONIC_TIMEOUT = 30000
+    SOUND_SPEED = 0.0343  # cm/us
+
+uart = UART(0, baudrate=PinConfig.UART_BAUDRATE, tx=PinConfig.UART_TX, rx=PinConfig.UART_RX)
+
+# Motores
+left_in1 = Pin(PinConfig.MOTOR_LEFT_BIN1, Pin.OUT)
+left_in2 = Pin(PinConfig.MOTOR_LEFT_BIN2, Pin.OUT)
+left_pwm = PWM(Pin(PinConfig.MOTOR_LEFT_PWM))
+left_pwm.freq(1000)
+
+right_in1 = Pin(PinConfig.MOTOR_RIGHT_AIN1, Pin.OUT)
+right_in2 = Pin(PinConfig.MOTOR_RIGHT_AIN2, Pin.OUT)
+right_pwm = PWM(Pin(PinConfig.MOTOR_RIGHT_PWM))
+right_pwm.freq(1000)
+
+# Servo
+servo = PWM(Pin(PinConfig.STEERING_SERVO))
+servo.freq(50)
+
+# Ultrasónico
+trigger = Pin(PinConfig.ULTRASONIC_TRIGGER, Pin.OUT)
+echo = Pin(PinConfig.ULTRASONIC_ECHO, Pin.IN)
+
+def motors(pwm1, pwm2):
+    dir_left = 1
+    if pwm1 < 0:
+        dir_left = -1
+        pwm1 = -pwm1
+    if pwm1 > 100: pwm1 = 100
+    duty = int((pwm1 / 100) * 65535)
+    left_pwm.duty_u16(duty)
+    left_in1.value(1 if dir_left == 1 else 0)
+    left_in2.value(0 if dir_left == 1 else 1)
+
+    dir_right = 1
+    if pwm2 < 0:
+        dir_right = -1
+        pwm2 = -pwm2
+    if pwm2 > 100: pwm2 = 100
+    duty = int((pwm2 / 100) * 65535)
+    right_pwm.duty_u16(duty)
+    right_in1.value(1 if dir_right == 1 else 0)
+    right_in2.value(0 if dir_right == 1 else 1)
+
+def set_servo(angle):
+
+    angle = max(0, min(180, angle))
+    pulse = MIN_US + (MAX_US - MIN_US) * (angle / 180.0)
+
+    pwm = PWM(Pin(PinConfig.STEERING_SERVO))
+    pwm.freq(FREQ)
+    period_us = 1_000_000 // FREQ
+    duty = int(pulse * 65535 // period_us)
+
+    pwm.duty_u16(duty)
+
+
+def read_distance(samples=3, timeout_us=30000):
+    # Inicialización de los pines
+    trig = Pin(PinConfig.ULTRASONIC_TRIGGER, Pin.OUT)
+    echo = Pin(PinConfig.ULTRASONIC_ECHO, Pin.IN)
+
+    # Función para enviar el pulso de 10µs
+    def _pulse():
+        trig.value(0)
+        utime.sleep_us(2)
+        trig.value(1)
+        print("Pulsando Trigger...")
+        utime.sleep_us(10)
+        trig.value(0)
+
+
+    # Función para realizar una medición
+    def _measure_once():
+        _pulse()
+
+        t0 = utime.ticks_us()
+        # Espera flanco de subida
+        while echo.value() == 0:
+            if utime.ticks_diff(utime.ticks_us(), t0) > timeout_us:
+                return -1
+
+        start = utime.ticks_us()
+        # Espera flanco de bajada
+        while echo.value() == 1:
+            if utime.ticks_diff(utime.ticks_us(), start) > timeout_us:
+                return -1
+
+        dur = utime.ticks_diff(utime.ticks_us(), start)  # µs
+        # Distancia en cm (vel. sonido ~343 m/s → 0.0343 cm/µs, ida y vuelta /2)
+        return (dur * 0.0343) / 2
+
+    # Tomamos varias mediciones
+    distances = []
+    for _ in range(max(1, samples)):
+        dist = _measure_once()
+        if dist >= 0:
+            distances.append(dist)
+
+    # Si hay mediciones válidas, devolver la mediana
+    if distances:
+        distances.sort()
+        return distances[len(distances) // 2]
+    
+    return -1  # Si todas las mediciones fallan
+
+
+last_ultrasonic_time = utime.ticks_ms()
+
+while True:
     try:
-        controller = VehicleController()
-        controller.run()
-    except KeyboardInterrupt:
-        print("\nInterrupted by user")
-        if controller:
-            controller.shutdown()
+        if uart.any():
+            raw = uart.readline()
+            if raw:
+                if isinstance(raw, (bytes, bytearray, memoryview)):
+                    line = raw.decode('utf-8', 'ignore').strip()
+                else:
+                    line = str(raw).strip()
+
+                print("RX:", line)
+
+                parts = line.split(",")
+                if len(parts) == 3:
+                    try:
+                        pwm1 = float(parts[0])
+                        pwm2 = float(parts[1])
+                        servo_angle = float(parts[2])
+                        print(f"pwm1={pwm1}, pwm2={pwm2}, servo={servo_angle}")
+                        motors(pwm1, pwm2)
+                        set_servo(servo_angle)
+                    except ValueError:
+                        print("Error: los valores deben ser numéricos")
+                else:
+                    print("Error: los datos recibidos no tienen el formato esperado")
     except Exception as e:
-        print(f"Fatal error: {e}")
-        if controller:
-            controller.shutdown()
+        print(f"Error en la lectura o procesamiento de datos: {e}")
+
+    # Ultrasonido
+    if utime.ticks_diff(utime.ticks_ms(), last_ultrasonic_time) > 500:
+        dist = read_distance()
+        print(f"Distancia: {dist} cm")
+        if dist != -1:
+            uart.write(f"{dist}\n")
+        last_ultrasonic_time = utime.ticks_ms()
+
+    # Pequeña pausa para evitar sobrecargar el CPU
+    utime.sleep_ms(10)
