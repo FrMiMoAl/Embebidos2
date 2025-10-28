@@ -1,0 +1,120 @@
+# model_c.py — L1 = turbo (speed=100)
+import time, threading, math
+
+# Mapping (NO CAMBIAR)
+STOP=0; ADELANTE=1; ATRAS=2; DERECHA=3; IZQUIERDA=4
+DiagDerechaAdelante=5; DiagIzquierdaAdelante=6; DiagDerechaAtras=7; DiagIzquierdaAtras=8
+Giroderecha=9; Giroizquierda=10
+
+def clamp(v, lo, hi): return max(lo, min(hi, v))
+
+class ModelC(threading.Thread):
+    """
+    Lee gamepad PS4 (LX,LY en [-1..1]) → comando (0..10) + velocidad (0..100).
+    Protocolo serie: envía S=<vel>\n y luego <cmd>\n.
+    L1 presionado -> velocidad=100 (si cmd != STOP).
+    """
+    def __init__(self, ser, ps4, loop_hz=30, deadzone=0.20):
+        super().__init__(daemon=True)
+        self.ser = ser
+        self.ps4 = ps4
+        self.loop_hz = loop_hz
+        self.deadzone = deadzone
+        self.stop_event = threading.Event()
+
+    def stop(self): self.stop_event.set()
+    def stopped(self): return self.stop_event.is_set()
+
+    # -------- Serial ----------
+    def _send_cmd(self, speed, cmd):
+        speed = clamp(int(speed), 0, 100)
+        try:
+            self.ser.send(f"S={speed}\n")
+            self.ser.send(f"{int(cmd)}\n")
+        except Exception as e:
+            print(f"[Serial] Error enviando: {e}")
+
+    # -------- Gamepad helpers ----------
+    def _is_l1_pressed(self):
+        """
+        Intenta leer L1 con distintos nombres/índices comunes.
+        Devuelve True si está presionado.
+        """
+        candidates = ("L1", "l1", "LB", "BUTTON_L1", 4)  # 4 es común en pygame
+        for key in candidates:
+            try:
+                val = self.ps4.get_button(key)
+                if isinstance(val, (int, float)):   # 0/1
+                    return bool(val)
+                return bool(val)                    # por si ya es bool
+            except Exception:
+                continue
+        return False
+
+    # -------- Mapeo de ejes a comando & velocidad ----------
+    def _axes_to_cmd(self, lx, ly):
+        """
+        Devuelve (cmd, speed) según LX/LY.
+        - cmd respeta el mapping original (0..10)
+        - speed en [0..100] = magnitud del stick
+        """
+        speed = int(round(100.0 * math.sqrt(lx*lx + ly*ly)))
+        if speed == 0:
+            return STOP, 0
+
+        ax = lx if abs(lx) >= self.deadzone else 0.0
+        ay = ly if abs(ly) >= self.deadzone else 0.0
+        if ax == 0.0 and ay == 0.0:
+            return STOP, 0
+
+        forward  = (ay < 0)   # LY negativo = arriba = ADELANTE
+        backward = (ay > 0)
+        right    = (ax > 0)
+        left     = (ax < 0)
+
+        # Diagonales
+        if forward  and right:  return DiagDerechaAdelante,  speed
+        if forward  and left:   return DiagIzquierdaAdelante, speed
+        if backward and right:  return DiagDerechaAtras,      speed
+        if backward and left:   return DiagIzquierdaAtras,    speed
+
+        # Ejes puros
+        if forward:   return ADELANTE,  speed
+        if backward:  return ATRAS,     speed
+        if right:     return DERECHA,   speed
+        if left:      return IZQUIERDA, speed
+
+        return STOP, 0
+
+    # -------- Loop principal ----------
+    def run(self):
+        print("[ModelC] start")
+        tick = time.monotonic()
+        try:
+            while not self.stopped():
+                self.ps4.update()
+                lx = float(self.ps4.get_axis(0))  # [-1..1]
+                ly = float(self.ps4.get_axis(1))  # [-1..1]
+
+                cmd, speed = self._axes_to_cmd(lx, ly)
+
+                # --- Turbo L1: si hay movimiento (cmd != STOP), fuerza velocidad a 100 ---
+                if cmd != STOP and self._is_l1_pressed():
+                    speed = 100
+
+                # DEBUG opcional:
+                # print(f"LX={lx:+.2f} LY={ly:+.2f} L1={self._is_l1_pressed()} -> CMD={cmd} SPEED={speed}")
+
+                self._send_cmd(speed, cmd)
+
+                # Ritmo estable
+                tick += 1.0/self.loop_hz
+                dt = tick - time.monotonic()
+                if dt > 0: time.sleep(dt)
+                else: tick = time.monotonic()
+
+        except KeyboardInterrupt:
+            print("[ModelC] user interrupt")
+        finally:
+            self._send_cmd(0, STOP)
+            print("[ModelC] stop")

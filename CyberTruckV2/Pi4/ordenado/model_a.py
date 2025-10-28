@@ -1,89 +1,112 @@
-import threading, time
-from math import copysign
+import time
+import re
+import threading
+from serial_comm import SerialComm
+PWM_MIN = 0
+PWM_MAX = 100
 
-PWM_MIN, PWM_MAX = -100, 100
-SERVO_MIN, SERVO_MAX, SERVO_CENTER = 30, 70, 50
+# Límites y valores por defecto
+ADELANTE = 1
+ATRAS = 2
+DERECHA=3
+IZQUIERDA=4
+DiagDerechaAdelante=5
+DiagIzquierdaAdelante=6
+DiagDerechaAtras=7
+DiagIzquierdaAtras=8
+Giroderecha=9
+Giroizquierda=10
 
-FWD_SPEED = 60
-TURN_SPEED = 70
-DIST_THRESH_CM = 20
-TURN_SEC_PER_DEG = 0.008   # CALIBRAR
 
-LOOP_HZ = 30
-DT = 1.0 / LOOP_HZ
-
-def clamp(v, lo, hi): return max(lo, min(hi, v))
+def clamp(v, lo, hi):
+    return max(lo, min(hi, v))
 
 class ModelA(threading.Thread):
-    """
-    Avanza hasta detectar objeto (distancia llega por UART desde la Pico),
-    gira 180° en el lugar y sigue. Permite request_turn(deg) no bloqueante.
-    """
-    def __init__(self, ser):
+
+    def __init__(self, serial_device):
         super().__init__(daemon=True)
-        self.ser = ser
+        self.serial_device = serial_device
         self.stop_event = threading.Event()
-        self.state = "forward"
-        self.turn_end_t = 0.0
-        self.turn_dir = 1
-        self.pending_turn_deg = 0.0
+        self.speed = 50  
 
-    def stop(self): self.stop_event.set()
-    def stopped(self): return self.stop_event.is_set()
+    def send_command(self, speed, cmd):
+        speed = clamp(int(speed), PWM_MIN, PWM_MAX)
+        self.serial_device.send(f"S={speed}\n")
+        self.serial_device.send(f"{int(cmd)}\n")
 
-    def send(self, p1, p2, s):
-        p1, p2 = clamp(int(p1), PWM_MIN, PWM_MAX), clamp(int(p2), PWM_MIN, PWM_MAX)
-        s = clamp(int(s), SERVO_MIN, SERVO_MAX)
-        self.ser.send(f"{p1},{p2},{s}")
+    def receive_distance(self):
+        raw = self.serial_device.receive()
+        if not raw:
+            return None
+        line = str(raw).strip()
+        m = re.search(r"DIST:\s*([0-9]+(?:\.[0-9]+)?)\s*cm", line)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                return None
+        return None
 
-    def request_turn(self, degrees):
-        self.pending_turn_deg += degrees
+    def move_forward(self):
+        self.send_command(50, ADELANTE)
 
-    def _start_turn(self, degrees):
-        self.turn_dir = 1 if degrees >= 0 else -1
-        self.turn_end_t = time.monotonic() + abs(degrees) * TURN_SEC_PER_DEG
-        self.state = "turning"
-        print(f"Solicitado giro: {degrees}°  (dur={abs(degrees)*TURN_SEC_PER_DEG:.2f}s)")
+    def move_backward(self): 
+        self.send_command(50, ATRAS)
 
-    def _maybe_parse_distance(self, line):
-        if not line: return None
-        line = line.strip()
-        num = ""
-        for ch in line:
-            if ch.isdigit() or ch in ".-": num += ch
-            elif num: break
-        try: return float(num)
-        except: return None
+    def Go_right(self):
+        self.send_command(50, DERECHA)
 
-    def run(self):
+    def Go_left(self):
+        self.send_command(50, IZQUIERDA)
+
+    def Go_DiagRight_Forward(self):
+        self.send_command(50, DiagDerechaAdelante)
+    
+    def Go_DiagLeft_Forward(self):
+        self.send_command(50, DiagIzquierdaAdelante)
+    
+    def Go_DiagRight_Backward(self):
+        self.send_command(50, DiagDerechaAtras)
+    
+    def Go_DiagLeft_Backward(self):
+        self.send_command(50, DiagIzquierdaAtras)
+
+    def Turn_right(self):
+        self.send_command(50, Giroderecha)
+    
+    def Turn_left(self):
+        self.send_command(50, Giroizquierda)
+
+
+    def stop_movement(self):
+        self.send_command(0, 0)
+
+    def stop(self):
+        self.stop_event.set()
+
+def run(self):
         print("==== MODEL A (AUTÓNOMO) ====")
-        next_tick = time.monotonic()
-        while not self.stopped():
-            # giros solicitados
-            if self.state == "forward" and abs(self.pending_turn_deg) > 0.1:
-                deg = self.pending_turn_deg
-                self.pending_turn_deg = 0.0
-                self._start_turn(deg)
+        try:
+            while not self.stop_event.is_set():
+                distance = self.receive_distance()
+                if distance is not None:
+                    print(f"Recibido: {distance:.1f} cm")
+                    if distance < 30:
+                        print("Objeto detectado (<30 cm) → girando derecha")
+                        self.Turn_right()
+                    else:
+                        print("Avanzando")
+                        self.move_forward()
+                else:
+                    self.move_forward()
+                self._sleep_until(0.1)
+        except KeyboardInterrupt:
+            print("ModelA: interrumpido por usuario.")
+        finally:
+            self.stop_movement()
+            print("ModelA: stop.")
 
-            if self.state == "forward":
-                dist = self._maybe_parse_distance(self.ser.receive())
-                if dist is not None:
-                    print(f"[RX] Distancia: {dist} cm")
-                    if dist <= DIST_THRESH_CM:
-                        print("Objeto detectado → giro 180°")
-                        self._start_turn(180)
-                self.send(FWD_SPEED, FWD_SPEED, SERVO_CENTER)
-
-            elif self.state == "turning":
-                if time.monotonic() >= self.turn_end_t:
-                    self.state = "forward"
-                pwm = TURN_SPEED * self.turn_dir
-                self.send(pwm, -pwm, SERVO_CENTER)
-
-            next_tick += DT
-            t = next_tick - time.monotonic()
-            if t > 0: time.sleep(t)
-            else: next_tick = time.monotonic()
-
-        self.send(0,0,SERVO_CENTER)
-        print("ModelA: stop.")
+if __name__ == "__main__":
+    serial_device = SerialComm(port="/dev/serial0", baudrate=115200, timeout=0.1)
+    model_a = ModelA(serial_device)
+    model_a.run()

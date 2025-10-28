@@ -1,137 +1,112 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import time
+import re
 import threading
 from serial_comm import SerialComm
+PWM_MIN = 0
+PWM_MAX = 100
 
 # Límites y valores por defecto
-PWM_MIN, PWM_MAX = -100, 100
-SERVO_MIN, SERVO_MAX = 30, 70
-SERVO_CENTER = 50
+ADELANTE = 1
+ATRAS = 2
+DERECHA=3
+IZQUIERDA=4
+DiagDerechaAdelante=5
+DiagIzquierdaAdelante=6
+DiagDerechaAtras=7
+DiagIzquierdaAtras=8
+Giroderecha=9
+Giroizquierda=10
+
 
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 class ModelA(threading.Thread):
-    """
-    Versión integrada de tu Model A, compatible con el Supervisor:
-      - Hilo daemon (start/stop)
-      - Usa tu lógica de avanzar y girar 180°
-      - Lee distancia por UART (SerialComm.receive())
-      - Envía comandos 'pwm1,pwm2,servo' (SerialComm.send()), con DEBUG en serial_comm.py
-      - Stop seguro (no se queda bloqueado en sleeps largos)
-    """
 
     def __init__(self, serial_device):
         super().__init__(daemon=True)
         self.serial_device = serial_device
         self.stop_event = threading.Event()
+        self.speed = 50  
 
-    # ===== Helpers de protocolo =====
-    def send_command(self, pwm1, pwm2, servo_angle):
-        pwm1 = clamp(int(pwm1), PWM_MIN, PWM_MAX)
-        pwm2 = clamp(int(pwm2), PWM_MIN, PWM_MAX)
-        servo_angle = clamp(int(servo_angle), SERVO_MIN, SERVO_MAX)
-        self.serial_device.send(f"{pwm1},{pwm2},{servo_angle}")  # [TX] lo muestra serial_comm
+    def send_command(self, speed, cmd):
+        speed = clamp(int(speed), PWM_MIN, PWM_MAX)
+        self.serial_device.send(f"S={speed}\n")
+        self.serial_device.send(f"{int(cmd)}\n")
 
     def receive_distance(self):
-        """
-        Intenta leer una línea desde la Pico y convertirla a float (cm).
-        Retorna None si no hay dato o si el valor no es válido.
-        """
-        raw = self.serial_device.receive()  # [RX] ya se imprime dentro de SerialComm
-        if raw is None:
-            # print("No se recibió distancia válida.")  # DEBUG opcional
+        raw = self.serial_device.receive()
+        if not raw:
             return None
-        try:
-            return float(raw)
-        except ValueError:
-            print(f"Valor de distancia no válido: {raw}")
-            return None
+        line = str(raw).strip()
+        m = re.search(r"DIST:\s*([0-9]+(?:\.[0-9]+)?)\s*cm", line)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                return None
+        return None
 
-    # ===== Acciones de movimiento =====
     def move_forward(self):
-        """Avanzar recto con tu setpoint."""
-        self.send_command(50, 50, SERVO_CENTER)
+        self.send_command(50, ADELANTE)
+
+    def move_backward(self): 
+        self.send_command(50, ATRAS)
+
+    def Go_right(self):
+        self.send_command(50, DERECHA)
+
+    def Go_left(self):
+        self.send_command(50, IZQUIERDA)
+
+    def Go_DiagRight_Forward(self):
+        self.send_command(50, DiagDerechaAdelante)
+    
+    def Go_DiagLeft_Forward(self):
+        self.send_command(50, DiagIzquierdaAdelante)
+    
+    def Go_DiagRight_Backward(self):
+        self.send_command(50, DiagDerechaAtras)
+    
+    def Go_DiagLeft_Backward(self):
+        self.send_command(50, DiagIzquierdaAtras)
+
+    def Turn_right(self):
+        self.send_command(50, Giroderecha)
+    
+    def Turn_left(self):
+        self.send_command(50, Giroizquierda)
+
 
     def stop_movement(self):
-        """Frenar y servo centrado."""
-        self.send_command(0, 0, SERVO_CENTER)
+        self.send_command(0, 0)
 
-    # ===== Giro 180° (tu secuencia), con stop seguro =====
-    def _sleep_until(self, seconds):
-        """Sleep fraccionado para permitir detener el hilo durante esperas largas."""
-        end = time.monotonic() + seconds
-        while time.monotonic() < end and not self.stop_event.is_set():
-            time.sleep(0.02)
-
-    def rotate_180(self):
-        """
-        Tu secuencia exacta, respetando servo en 30 (izq) y 70 (der),
-        y con sleeps fraccionados para poder parar si el supervisor cambia de modo.
-        """
-        # Primera mitad (giro hacia izquierda)
-        self.send_command(0, 0, 30)
-        self._sleep_until(1.0)
-        if self.stop_event.is_set(): 
-            return
-
-        self.send_command(-50, -40, 30)
-        self._sleep_until(3.0)
-        if self.stop_event.is_set(): 
-            return
-
-        self.stop_movement()
-        self._sleep_until(1.0)
-        if self.stop_event.is_set(): 
-            return
-
-        # Segunda mitad (giro hacia derecha)
-        self.send_command(0, 0, 70)
-        self._sleep_until(1.0)
-        if self.stop_event.is_set(): 
-            return
-
-        self.send_command(40, 50, 70)
-        self._sleep_until(3.0)
-
-        # Finaliza deteniendo
-        self.stop_movement()
-
-    # ===== API Supervisor =====
     def stop(self):
         self.stop_event.set()
 
-    def run(self):
+def run(self):
         print("==== MODEL A (AUTÓNOMO) ====")
         try:
             while not self.stop_event.is_set():
                 distance = self.receive_distance()
                 if distance is not None:
-                    print(f"Recibido: {distance} cm")
+                    print(f"Recibido: {distance:.1f} cm")
                     if distance < 30:
-                        print("Objeto detectado, girando 180°")
-                        self.rotate_180()
+                        print("Objeto detectado (<30 cm) → girando derecha")
+                        self.Turn_right()
                     else:
                         print("Avanzando")
                         self.move_forward()
                 else:
-                    # Sin dato, puedes optar por mantener último comando o frenar.
-                    # Aquí mantenemos avance suave para no quedarnos estáticos sin RX:
                     self.move_forward()
-
-                # Cadencia de ciclo
                 self._sleep_until(0.1)
-
         except KeyboardInterrupt:
             print("ModelA: interrumpido por usuario.")
         finally:
             self.stop_movement()
             print("ModelA: stop.")
 
-
-
-serial_device = SerialComm(port="/dev/serial0", baudrate=115200)
-model_a = ModelA(serial_device)
-model_a.run()
+if __name__ == "__main__":
+    serial_device = SerialComm(port="/dev/serial0", baudrate=115200, timeout=0.1)
+    model_a = ModelA(serial_device)
+    model_a.run()

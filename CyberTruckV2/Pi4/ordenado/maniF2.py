@@ -27,7 +27,6 @@ class Supervisor:
         self.last_btn = {0:0, 1:0, 2:0, 3:0}
 
     def _stop_active(self):
-        """Detiene el modelo activo (si lo hay) y espera su cierre."""
         if self.active and self.active.is_alive():
             self.active.stop()
             self.active.join(timeout=1.0)
@@ -35,7 +34,6 @@ class Supervisor:
         self.active_name = "STOP"
 
     def _start_model(self, name: str):
-        """Arranca el modelo A/B/C o hace STOP."""
         self._stop_active()
 
         if name == "A":

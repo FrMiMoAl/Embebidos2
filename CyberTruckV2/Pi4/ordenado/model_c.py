@@ -1,89 +1,94 @@
-# model_c.py
+# model_c.py (versión protocolo S=<vel> + <cmd>, mapping 0..10 conservado)
 import time
 import threading
+import math
 
-# --- Intenta usar un BaseModel compartido; si no existe, define uno mínimo ---
-try:
-    from model_base import BaseModel, clamp
-    HAVE_SHARED_BASE = True
-except Exception:
-    HAVE_SHARED_BASE = False
+STOP=0; 
+ADELANTE=1 
+ATRAS=2
+DERECHA=3
+IZQUIERDA=4
+DiagDerechaAdelante=5
+DiagIzquierdaAdelante=6
+DiagDerechaAtras=7
+DiagIzquierdaAtras=8
+Giroderecha=9
+Giroizquierda=10
 
-    def clamp(v, lo, hi):
-        return max(lo, min(hi, v))
 
-    class BaseModel(threading.Thread):
-        def __init__(self, ser):
-            super().__init__(daemon=True)
-            self.ser = ser
-            self.stop_event = threading.Event()
+def clamp(v, lo, hi): return max(lo, min(hi, v))
 
-        def stop(self):
-            self.stop_event.set()
-
-        def stopped(self):
-            return self.stop_event.is_set()
-
-        def send(self, pwm1, pwm2, servo):
-            pwm1 = clamp(int(pwm1), -100, 100)
-            pwm2 = clamp(int(pwm2), -100, 100)
-            servo = clamp(int(servo), 30, 70)
-            self.ser.send(f"{pwm1},{pwm2},{servo}")
-
-# --- Constantes usadas por ModelC (idénticas a la versión que te funcionaba) ---
-PWM_MIN, PWM_MAX = -100, 100
-SERVO_MIN, SERVO_MAX = 30, 70
-SERVO_CENTER = 50
-
-LOOP_HZ = 30
-DT = 1.0 / LOOP_HZ
-
-# --- Utilidades ---
-def mix_diff(speed, turn):
-    left  = clamp(speed + turn, PWM_MIN, PWM_MAX)
-    right = clamp(speed - turn, PWM_MIN, PWM_MAX)
-    return int(left), int(right)
-
-def servo_from_lx(lx):  # lx ∈ [-1..1]
-    ang = int(round(SERVO_CENTER + 20 * lx))
-    return clamp(ang, SERVO_MIN, SERVO_MAX)
-
-# --- Clase principal: MISMA LÓGICA QUE TU VERSIÓN ANTERIOR ---
-class ModelC(BaseModel):
-    def __init__(self, ser, ps4):
-        super().__init__(ser)
+class ModelC(threading.Thread):
+    def __init__(self, ser, ps4, loop_hz=30, deadzone=0.20):
+        super().__init__(daemon=True)
+        self.ser = ser
         self.ps4 = ps4
+        self.loop_hz = loop_hz
+        self.deadzone = deadzone
+        self.stop_event = threading.Event()
+
+    def stop(self): self.stop_event.set()
+    def stopped(self): return self.stop_event.is_set()
+
+    def _send_cmd(self, speed, cmd):
+        speed = clamp(int(speed), 0, 100)
+        try:
+            self.ser.send(f"S={speed}\n")
+            self.ser.send(f"{int(cmd)}\n")
+        except Exception as e:
+            print(f"[Serial] Error enviando: {e}")
+    
+    def _axes_to_cmd(self, lx, ly):
+        speed = int(round(100.0 * math.sqrt(lx*lx + ly*ly)))
+        if speed == 0: 
+            return STOP, 0
+
+        ax = lx if abs(lx) >= self.deadzone else 0.0
+        ay = ly if abs(ly) >= self.deadzone else 0.0
+
+        if ax == 0.0 and ay == 0.0:
+            return STOP, 0
+
+        forward  = (ay < 0) 
+        backward = (ay > 0)
+        right    = (ax > 0)
+        left     = (ax < 0)
+
+        if forward and right:   return DiagDerechaAdelante, speed
+        if forward and left:    return DiagIzquierdaAdelante, speed
+        if backward and right:  return DiagDerechaAtras, speed
+        if backward and left:   return DiagIzquierdaAtras, speed
+
+        if forward:  return ADELANTE, speed
+        if backward: return ATRAS, speed
+        if right:    return DERECHA, speed   
+        if left:     return IZQUIERDA, speed
+
+        return STOP, 0
 
     def run(self):
         print("[ModelC] start")
-        next_tick = time.monotonic()
+        tick = time.monotonic()
+        try:
+            while not self.stopped():
+                self.ps4.update()
+                lx = float(self.ps4.get_axis(0))
+                ly = float(self.ps4.get_axis(1)) 
 
-        while not self.stopped():
-            # Lee mando
-            self.ps4.update()
-            lx = self.ps4.get_axis(0)   # -1..1 (izq/der)
-            ly = self.ps4.get_axis(1)   # -1..1 (arriba/abajo)
+                cmd, speed = self._axes_to_cmd(lx, ly)
+                # print(f"LX={lx:+.2f} LY={ly:+.2f} -> CMD={cmd} SPEED={speed}")
 
-            # Mapas iguales a tu versión
-            speed = int(round(-ly * 100))   # ly=-1 => +100 (adelante)
-            turn  = int(round(lx * 100))    # -100..100
-            left, right = mix_diff(speed, turn)
-            servo = servo_from_lx(lx)
+                self._send_cmd(speed, cmd)
 
-            # DEBUG
-            print(f"[ModelC] LX={lx:.2f} LY={ly:.2f} -> L={left} R={right} S={servo}")
 
-            # Enviar a la Pico
-            self.send(left, right, servo)
+                tick += 1.0/self.loop_hz
+                dt = tick - time.monotonic()
+                if dt > 0: time.sleep(dt)
+                else: tick = time.monotonic()
 
-            # Ritmo
-            next_tick += DT
-            sleep_t = next_tick - time.monotonic()
-            if sleep_t > 0:
-                time.sleep(sleep_t)
-            else:
-                next_tick = time.monotonic()
-
-        # Salida segura
-        self.send(0, 0, SERVO_CENTER)
-        print("[ModelC] stop")
+        except KeyboardInterrupt:
+            print("[ModelC] user interrupt")
+        finally:
+            # Salida segura
+            self._send_cmd(0, STOP)
+            print("[ModelC] stop")
