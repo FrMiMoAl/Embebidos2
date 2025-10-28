@@ -1,14 +1,15 @@
-from unittest import case
+
 from machine import Pin, PWM, UART
 import utime
 
-''' =============================
-                    Clases y funciones
-     =============================
+'''
+=============================
+                Clases y funciones
+=============================
 '''
 
 class MotorController:
-    def __init__(self, PWMA1=16,PWMB1=21, A1_IN1=18, A1_IN2=17, B1_IN1=19, B1_IN2=20, PWMA2=22, PWMB2=3, A2_IN1=7, A2_IN2=28, B2_IN1=6, B2_IN2=2):
+    def _init_(self, PWMA1=16,PWMB1=21, A1_IN1=18, A1_IN2=17, B1_IN1=19, B1_IN2=20, PWMA2=22, PWMB2=3, A2_IN1=7, A2_IN2=28, B2_IN1=6, B2_IN2=2):
         ''' cfg:
 
               FRONT         // Motor A  IN1: 18 IN2: 17  PWM:16
@@ -172,9 +173,10 @@ last_ultrasonic_time = utime.ticks_ms()
 motors = MotorController()
 uart = UART(0, baudrate=115200, tx=0 , rx=1)
 
-''' =============================
-                Main loop
-    =============================
+''' 
+=============================
+            Main loop
+=============================
 '''
 while True:
     try:
