@@ -3,7 +3,7 @@ from machine import Pin
 import time
 
 class Ultrasonido:
-    def __init__(self, trig_pin, echo_pin, *, timeout_us=30000):
+    def _init_(self, trig_pin, echo_pin, *, timeout_us=30000):
         self.trig = Pin(trig_pin, Pin.OUT)
         self.echo = Pin(echo_pin, Pin.IN)
         self.timeout_us = timeout_us
