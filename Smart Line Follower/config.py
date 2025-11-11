@@ -15,8 +15,8 @@ Modifica estos valores según tu setup
 # - Cámara USB: 0, 1, 2... (índice de cámara)
 # - Archivo: "video.mp4"
 
-VIDEO_SOURCE = "https://finder-blogging-married-chocolate.trycloudflare.com/cam/index.m3u8"
-# VIDEO_SOURCE = 0  # Descomentar para usar cámara USB local
+#VIDEO_SOURCE = "https://finder-blogging-married-chocolate.trycloudflare.com/cam/index.m3u8"
+VIDEO_SOURCE = 0  # Descomentar para usar cámara USB local
 # VIDEO_SOURCE = "rtsp://192.168.1.10:8554/unicast"  # RTSP desde Raspberry Pi
 
 # Resolución del video
