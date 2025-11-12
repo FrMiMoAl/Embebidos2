@@ -48,9 +48,9 @@ class MainPage(QWidget):
 
     # ==================== PANEL DE VIDEO ====================
     def create_video_panel(self):
-        """Crea el panel superior con el video/cámara"""
+        """Crea el panel superior con el video/cámara sin botón de conexión"""
         layout = QVBoxLayout()
-        
+
         # Frame contenedor del video
         video_frame = QFrame()
         video_frame.setStyleSheet(f"""
@@ -60,68 +60,47 @@ class MainPage(QWidget):
                 border: 2px solid {self.cfg['colors']['secondary']};
             }}
         """)
-        
+
         video_layout = QVBoxLayout()
         video_layout.setContentsMargins(10, 10, 10, 10)
-        
+
         # Label para mostrar video
         self.video_label = QLabel()
         self.video_label.setFixedSize(800, 600)
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setStyleSheet(f"background-color: {self.cfg['colors']['black']}; border-radius: 8px;")
-        
+
         # Cargar imagen placeholder
         bg_path = self.cfg["images"].get("camera_placeholder", "")
         if bg_path and os.path.exists(bg_path):
             pixmap = QPixmap(bg_path).scaled(
-                self.video_label.size(), 
+                self.video_label.size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
             self.video_label.setPixmap(pixmap)
-        
-        # Botón Conectar superpuesto
-        self.connect_btn = QPushButton("🎥 CONECTAR CÁMARA")
-        self.connect_btn.setFixedSize(200, 60)
-        self.connect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.connect_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {self.cfg['colors']['accent']};
-                color: {self.cfg['colors']['text']};
-                border-radius: 10px;
-                font-weight: bold;
-                font-size: 14px;
-                border: 3px solid {self.cfg['colors']['text']};
-            }}
-            QPushButton:hover {{
-                background-color: {self.cfg['colors']['secondary']};
-                border: 3px solid {self.cfg['colors']['accent']};
-            }}
-            QPushButton:pressed {{
-                background-color: {self.cfg['colors']['panel']};
-            }}
-        """)
-        self.connect_btn.clicked.connect(self.connect_camera)
-        
+
         video_layout.addWidget(self.video_label, alignment=Qt.AlignmentFlag.AlignCenter)
         video_frame.setLayout(video_layout)
-        
-        # Layout para superponer botón
-        overlay_layout = QVBoxLayout()
-        overlay_layout.addWidget(video_frame)
-        
-        # Posicionar botón en el centro del video
-        button_container = QWidget()
-        button_container.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-        button_layout = QVBoxLayout()
-        button_layout.addStretch()
-        button_layout.addWidget(self.connect_btn, alignment=Qt.AlignmentFlag.AlignCenter)
-        button_layout.addStretch()
-        button_container.setLayout(button_layout)
-        
-        layout.addWidget(video_frame)
-        
+
+        layout.addWidget(video_frame, alignment=Qt.AlignmentFlag.AlignCenter)
+
         return layout
+
+    # ==================== Función toggle ====================
+    def toggle_camera_connection(self):
+        """Conecta o desconecta la cámara según el estado del botón"""
+        if self.connect_btn.isChecked():
+            self.connect_btn.setText("🎥 Desconectar")
+            self.console_append("[VIDEO] Intentando conectar cámara...", "info")
+            self.connect_camera()  # función existente que inicia el stream
+        else:
+            self.connect_btn.setText("🎥 Conectar")
+            if self.video_stream and self.video_stream.is_running:
+                self.console_append("[VIDEO] Desconectando cámara...", "info")
+                self.video_stream.stop()
+
+
 
     def connect_camera(self):
         """
@@ -134,9 +113,32 @@ class MainPage(QWidget):
         self.connect_btn.hide()
         self.console_append("[SISTEMA] Conectando a cámara...", "info")
         
+        if getattr(self, "video_stream", None) and self.video_stream.is_running:
+            # Desconectar cámara
+            self.video_stream.stop()
+            self.console_append("[VIDEO] Stream detenido", "warning")
+            self.connect_btn.setText("🎥 CONECTAR CÁMARA")
+            
+            # Volver a imagen placeholder
+            bg_path = self.cfg["images"].get("camera_placeholder", "")
+            if bg_path and os.path.exists(bg_path):
+                pixmap = QPixmap(bg_path).scaled(
+                    self.video_label.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                self.video_label.setPixmap(pixmap)
+            else:
+                # Si no hay placeholder, limpiar label
+                self.video_label.clear()
+                self.video_label.setStyleSheet(f"background-color: {self.cfg['colors']['black']}; border-radius: 8px;")
+            
+            return
+
+
         try:
             # Importar módulos de video y configuración
-            from video_stream import VideoStream
+            from modules.video_stream import VideoStream
             from config import get_video_config
             
             # Obtener configuración de video
@@ -153,10 +155,11 @@ class MainPage(QWidget):
             # Iniciar stream
             if self.video_stream.start():
                 self.console_append("[VIDEO] Stream iniciado correctamente", "success")
+                self.connect_btn.show()
             else:
                 self.console_append("[VIDEO] No se pudo iniciar el stream", "error")
                 self.connect_btn.show()
-                
+               
         except ImportError as e:
             self.console_append(f"[ERROR] Módulos no encontrados: {e}", "error")
             self.console_append("[INFO] Asegúrate de tener video_stream.py y config.py", "warning")
@@ -175,10 +178,10 @@ class MainPage(QWidget):
             self.status_led.setText("● Desconectado")
             self.status_led.setStyleSheet("color: #FF0000; font-weight: bold; font-size: 13px;")
             self.console_append("[SISTEMA] Cámara desconectada", "warning")
-
+    
     # ==================== PANEL DE CONSOLA ====================
     def create_console_panel(self):
-        """Crea el panel de consola/log SSH"""
+        """Crea el panel de consola/log SSH con botón de conexión a cámara"""
         console_frame = QFrame()
         console_frame.setStyleSheet(f"""
             QFrame {{
@@ -187,11 +190,15 @@ class MainPage(QWidget):
                 border: 2px solid {self.cfg['colors']['secondary']};
             }}
         """)
-        
+
         console_layout = QVBoxLayout()
         console_layout.setContentsMargins(10, 10, 10, 10)
-        
-        # Título
+
+        # Layout horizontal para título + botón
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Título de consola
         console_title = QLabel("📟 Consola SSH - Raspberry Pi 4")
         console_title.setStyleSheet(f"""
             color: {self.cfg['colors']['accent']};
@@ -199,7 +206,32 @@ class MainPage(QWidget):
             font-size: 14px;
             padding: 5px;
         """)
-        
+
+        # Botón toggle de cámara
+        self.connect_btn = QPushButton("🎥 Conectar cámara")
+        self.connect_btn.setFixedSize(150, 35)
+        self.connect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.connect_btn.setCheckable(True)
+        self.connect_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #FF0000;  /* rojo por defecto desconectado */
+                color: {self.cfg['colors']['text']};
+                border-radius: 5px;
+                font-weight: bold;
+                font-size: 12px;
+                border: 2px solid {self.cfg['colors']['text']};
+            }}
+            QPushButton:checked {{
+                background-color: #00FF00;  /* verde conectado */
+                color: {self.cfg['colors']['black']};
+            }}
+        """)
+        self.connect_btn.clicked.connect(self.toggle_camera_connection)
+
+        header_layout.addWidget(console_title, alignment=Qt.AlignmentFlag.AlignLeft)
+        header_layout.addStretch()
+        header_layout.addWidget(self.connect_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
         # Text Edit para la consola
         self.console = QTextEdit()
         self.console.setReadOnly(True)
@@ -215,14 +247,14 @@ class MainPage(QWidget):
                 padding: 8px;
             }}
         """)
-        
         self.console_append("[SISTEMA] Consola inicializada. Esperando conexión SSH...", "info")
-        
-        console_layout.addWidget(console_title)
+
+        console_layout.addLayout(header_layout)
         console_layout.addWidget(self.console)
         console_frame.setLayout(console_layout)
-        
+
         return console_frame
+
 
     def console_append(self, message, msg_type="info"):
         """Añade mensajes a la consola con formato"""

@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtGui import QFont
 
 sys.path.append('dashboard')
+sys.path.append('modules')
 
 def check_config_file():
     """Verifica que el archivo de configuración exista"""
@@ -82,7 +83,7 @@ def main():
         
         # Crear y mostrar dashboard manager
         #from dashboard import DashboardManager
-        from dashboard_manager import DashboardManager
+        from dashboard.dashboard_manager import DashboardManager
         manager = DashboardManager(cfg_path="cfg_dashboard.json")
         manager.show()
         
