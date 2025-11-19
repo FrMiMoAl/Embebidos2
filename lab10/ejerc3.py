@@ -4,12 +4,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 
 df = pd.read_csv("spam.csv")  
-df = df[['label', 'text']]    
+df = df[['Category', 'Message']]    
 
 le = LabelEncoder()
-y = le.fit_transform(df['label'])
+y = le.fit_transform(df['Category'].values)
 
-texts = df['text'].astype(str).values
+texts = df['Message'].astype(str).values
 
 tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=5000, oov_token="<OOV>")
 tokenizer.fit_on_texts(texts)
