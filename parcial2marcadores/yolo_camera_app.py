@@ -7,7 +7,7 @@ from marker_detector import MarkerDetector
 
 MODEL_PATH   = "runs_marker/yolov8n_markers7/weights/best.pt"
 CONF_TH      = 0.5
-CAMERA_INDEX = 2
+CAMERA_INDEX = 0
 WINDOW_NAME  = "markers"
 
 
