@@ -1,169 +1,75 @@
-import pandas as pd
-import numpy as np
 import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import confusion_matrix, accuracy_score
-import matplotlib.pyplot as plt
-import seaborn as sns
-import os
+from tensorflow import keras
+import cv2
+import numpy as np
 
-BASE_PATH = '/home/samuel/Downloads/Embebidos/embebidos.v11i.tensorflow' 
-IMAGE_SIZE = (256, 256) # Tamaño de imagen para entrenamiento rápido
-BATCH_SIZE = 32
-#########################################
-# --- 2. Cargar Datos desde CSV ---
-def load_data_from_csv(folder, csv_filename):
-    """Carga rutas de imagen y etiquetas desde el CSV."""
-    csv_path = os.path.join(BASE_PATH, folder, csv_filename)
-    df = pd.read_csv(csv_path)
-    LABEL_COLUMN_NAME = 'class' # Nombre correcto de la columna de etiquetas
-    FILE_COLUMN_NAME = df.columns[0] # Asume que la primera columna es el nombre del archivo
+# 1. Cargar el modelo
+try:
+    # Asegúrate de que la ruta sea correcta
+    model = keras.models.load_model('/home/samuel/Downloads/Embebidos/embebidos.v11i.tensorflow/model.h5') 
+    print("Modelo cargado exitosamente.")
+except Exception as e:
+    print(f"Error al cargar el modelo: {e}")
+    exit()
+
+# 2. Definir las etiquetas (en el orden que tu modelo las espera)
+etiquetas = ["borrador", "marcador rojo", "marcador negro", "marcador azul"]
+
+# Inicializar la captura de video (0 generalmente es la cámara por defecto)
+cap = cv2.VideoCapture(2)
+
+if not cap.isOpened():
+    print("Error: No se pudo abrir la cámara.")
+    exit()
+
+# Definir el tamaño de entrada que tu modelo espera (esto es crucial)
+# Ajusta 'input_size' al tamaño con el que entrenaste tu modelo (ej: 224, 224)
+input_size = (256,256)
+
+while True:
+    # 1. Capturar frame por frame
+    ret, frame = cap.read()
+    if not ret:
+        break # Si no se puede leer el frame, salimos del bucle
+
+    # 2. Preprocesar el frame para la entrada del modelo
+    # a) Redimensionar al tamaño esperado por el modelo
+    input_frame = cv2.resize(frame, input_size) 
+    # b) Convertir a un array de Numpy y añadir la dimensión de batch
+    # El modelo espera una forma (1, alto, ancho, canales)
+    input_data = np.expand_dims(input_frame, axis=0)
     
-    df['full_path'] = df[FILE_COLUMN_NAME].apply(lambda x: os.path.join(BASE_PATH, folder, x))
+    # c) **NORMALIZACIÓN CRUCIAL**: Normaliza como lo hiciste en el entrenamiento
+    # Si normalizaste a [0, 1]
+    input_data = input_data / 255.0 
 
-    # Filtra por imágenes que realmente existen (opcional pero recomendado)
-    df = df[df['full_path'].apply(os.path.exists)]
+    # 3. Realizar la Predicción
+    # El resultado dependerá de la salida de tu modelo (ej: YOLO, RetinaNet, clasificador simple)
+    predicciones = model.predict(input_data)
     
-    return df['full_path'].tolist(), df[LABEL_COLUMN_NAME].tolist()
-
-# Cargar datos para entrenamiento y validación
-train_images, train_labels = load_data_from_csv('train', '_annotations.csv')
-valid_images, valid_labels = load_data_from_csv('valid', '_annotations.csv')
-test_images, test_labels = load_data_from_csv('test', '_annotations.csv')
-
-# --- 3. Codificación de Etiquetas (Label Encoding) ---
-# Combina todas las etiquetas para un codificador consistente
-all_labels = train_labels + valid_labels + test_labels
-le = LabelEncoder()
-le.fit(all_labels)
-
-# Transforma las etiquetas
-train_labels_encoded = le.transform(train_labels)
-valid_labels_encoded = le.transform(valid_labels)
-test_labels_encoded = le.transform(test_labels)
-
-NUM_CLASSES = len(le.classes_)
-
-# --- 4. Crear Generadores de Datos de TensorFlow (para Clasificación) ---
-def create_dataset(image_paths, labels_encoded):
-    """Crea un tf.data.Dataset para cargar y preprocesar imágenes."""
+    # 4. Interpretar y Mostrar Resultados
     
-    def load_and_preprocess_image(path, label):
-        # Carga la imagen
-        img = tf.io.read_file(path)
-        img = tf.image.decode_jpeg(img, channels=3)
-        # Redimensiona y normaliza
-        img = tf.image.resize(img, IMAGE_SIZE)
-        img = img / 255.0
-        # Convierte la etiqueta a formato One-Hot
-        label = tf.one_hot(label, depth=NUM_CLASSES)
-        return img, label
-
-    dataset = tf.data.Dataset.from_tensor_slices((image_paths, labels_encoded))
-    dataset = dataset.map(load_and_preprocess_image, num_parallel_calls=tf.data.AUTOTUNE)
-    dataset = dataset.shuffle(buffer_size=1000).batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
-    return dataset
-
-train_ds = create_dataset(train_images, train_labels_encoded)
-valid_ds = create_dataset(valid_images, valid_labels_encoded)
-test_ds = create_dataset(test_images, test_labels_encoded)
-##########################################
-
-model = Sequential([
-
-    Conv2D(32, (3, 3), activation='relu', input_shape=(IMAGE_SIZE[0], IMAGE_SIZE[1], 3)),
-    MaxPooling2D((2, 2)),
+    # --- EJEMPLO para un modelo de CLASIFICACIÓN (si tu detección es a nivel de imagen) ---
+    # Si tu modelo es un CLASIFICADOR que predice una de las 4 etiquetas:
     
-    Conv2D(64, (3, 3), activation='relu'),
-    MaxPooling2D((2, 2)),
+    clase_predicha_idx = np.argmax(predicciones[0])
+    confianza = np.max(predicciones[0])
     
-    Conv2D(128, (3, 3), activation='relu'),
-    MaxPooling2D((2, 2)),
-
-    Conv2D(256, (3, 3), activation='relu'),
-    MaxPooling2D((2, 2)),
-
-    Conv2D(512, (3, 3), activation='relu'),
-    MaxPooling2D((2, 2)),
-
-
-    Flatten(),
-    Dense(512, activation='relu'),
-    Dense(NUM_CLASSES, activation='softmax') # La capa de salida debe tener el número de clases
-])
-
-# --- 6. Compilación del Modelo ---
-model.compile(optimizer='adam',
-              loss='categorical_crossentropy',
-              metrics=['accuracy'])
-
-print("Resumen del Modelo:")
-model.summary()
-
-# --- 7. Entrenamiento del Modelo ---
-# Usa los conjuntos de entrenamiento y validación
-EPOCHS = 75 # Se recomienda aumentar las épocas para mejor rendimiento
-
-print("\n--- Iniciando Entrenamiento ---")
-history = model.fit(
-    train_ds,
-    validation_data=valid_ds,
-    epochs=EPOCHS
-)
-
-print("\n--- Entrenamiento Finalizado ---")
-
-
-# --- 8. Evaluación en el Conjunto de Prueba ---
-print("\n--- Evaluación en el Conjunto de Prueba ---")
-loss, accuracy = model.evaluate(test_ds)
-print(f"Accuracy del Modelo en Test: {accuracy*100:.2f}%")
-
-# --- 9. Generar Matriz de Confusión ---
-
-def get_labels_and_predictions(dataset, model):
-    """Obtiene las etiquetas verdaderas y predicciones del dataset."""
-    y_true = []
-    y_pred_probs = []
+    clase_predicha = etiquetas[clase_predicha_idx]
     
-    for images, labels in dataset:
-        # Obtener etiquetas verdaderas
-        y_true.extend(np.argmax(labels.numpy(), axis=1))
-        # Obtener predicciones
-        y_pred_probs.extend(model.predict(images, verbose=0))
+    texto_a_mostrar = f"Detectado: {clase_predicha} ({confianza:.2f})"
     
-    y_true_int = np.array(y_true)
-    y_pred_int = np.argmax(np.array(y_pred_probs), axis=1)
+    # Mostrar el texto en el frame original
+    cv2.putText(frame, texto_a_mostrar, (10, 30), 
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
     
-    return y_true_int, y_pred_int
+    # 5. Mostrar el frame
+    cv2.imshow('Deteccion en Tiempo Real', frame)
 
-# Obtener predicciones
-y_true_final, y_pred_final = get_labels_and_predictions(test_ds, model)
+    # 6. Salir del bucle con la tecla 'q'
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
 
-# Generar matriz de confusión
-cm = confusion_matrix(y_true_final, y_pred_final)
-class_names = le.classes_
-
-print("\n--- Matriz de Confusión ---")
-print(cm)
-
-# Visualizar matriz de confusión
-plt.figure(figsize=(10, 8))
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-            xticklabels=class_names, yticklabels=class_names)
-plt.title('Matriz de Confusión - Conjunto de Prueba')
-plt.ylabel('Etiqueta Verdadera')
-plt.xlabel('Etiqueta Predicha')
-plt.tight_layout()
-plt.show()
-
-
-# Calcular accuracy final
-final_accuracy = accuracy_score(y_true_final, y_pred_final)
-print(f"\nAccuracy Final: {final_accuracy*100:.2f}%")
-
-model.save('model.h5')
-print("Model saved as 'model.h5'")
+# 7. Liberar recursos
+cap.release()
+cv2.destroyAllWindows()
