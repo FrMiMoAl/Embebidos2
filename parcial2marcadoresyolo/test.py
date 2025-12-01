@@ -5,7 +5,7 @@ import time
 # ================== CONFIGURACIÓN ==================
 MODEL_PATH   = "runs_marker/yolov8n_markers7/weights/best.pt"
 CONF_TH      = 0.5         # Umbral de confianza
-CAMERA_INDEX = 2           # Cambia esto en la RPi si usas otra cámara
+CAMERA_INDEX = 0           # Cambia esto en la RPi si usas otra cámara
 WINDOW_NAME  = "markers"   # Nombre de la ventana
 # ===================================================
 
