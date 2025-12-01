@@ -51,7 +51,7 @@ def main():
         return
     
     ruta_imagen = sys.argv[1]
-    clasificar_imagen(ruta_imagen)
+    clasificar_imagen('/home/samuel/Downloads/20251122_202408.jpg')
 
 if __name__ == "__main__":
     main()
