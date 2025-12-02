@@ -10,4 +10,4 @@ Todos bienvenidos menos ________.
 
 
 
-Alan la chupa a Samu
+Samu la chupa a Alan
