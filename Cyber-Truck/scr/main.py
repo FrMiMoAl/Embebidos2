@@ -1,68 +1,220 @@
-# =============================================
-#
-#                       MAIN
-#
-# =============================================
-
-
-# Integra Steering, Motores, USonic y UARTHandler
-
-from Steering import Steering
-from Motore import DCMotor
-from USonic import USonic
-from UARTHandler import UARTHandler
+import sys
+import os
 import time
+from pathlib import Path
+import threading
 
-# Configuración de pines (ajusta según tu wiring)
-MOTOR_A_PWM, MOTOR_A_IN1, MOTOR_A_IN2 = 0, 1, 2
-MOTOR_B_PWM, MOTOR_B_IN1, MOTOR_B_IN2 = 3, 4, 5
-SERVO_PIN = 15
-TRIG_PIN, ECHO_PIN = 10, 11
+# Ensure local vendored packages in ./libs are importable (pyserial, pyPS4Controller, etc.)
+ROOT = os.path.dirname(__file__)
+LIBS_DIR = os.path.join(ROOT, "libs")
+if os.path.isdir(LIBS_DIR) and LIBS_DIR not in sys.path:
+    sys.path.insert(0, LIBS_DIR)
 
-# Inicialización
-motorA = DCMotor(MOTOR_A_PWM, MOTOR_A_IN1, MOTOR_A_IN2)
-motorB = DCMotor(MOTOR_B_PWM, MOTOR_B_IN1, MOTOR_B_IN2)
-steer = Steering(SERVO_PIN)
-sonic = USonic(TRIG_PIN, ECHO_PIN)
-uart = UARTHandler()
+try:
+    import serial
+except Exception as e:
+    print("\u26a0\ufe0f Warning: could not import 'serial' (pyserial).",
+          "If you don't have pyserial installed system-wide,",
+          "ensure the ./libs folder contains pyserial or install it with pip.")
+    raise
 
-uart.send("BOOT OK")
+from controller import MyController
 
-reporting = False
-last_report = time.time()
+PORT = "/dev/serial0"
+BAUD = 115200
+FILE = Path("/home/raspberry/Documents/puerto/control.txt")
 
-while True:
-    cmd = uart.read_command()
-    if cmd:
-        if cmd.lower().startswith("motora:"):
-            val = int(cmd.split(":",1)[1])
-            motorA.set_speed(val)
-            uart.send(f"OK motora {val}")
-        elif cmd.lower().startswith("motorb:"):
-            val = int(cmd.split(":",1)[1])
-            motorB.set_speed(val)
-            uart.send(f"OK motorb {val}")
-        elif cmd.lower().startswith("steer:"):
-            ang = int(cmd.split(":",1)[1])
-            steer.angle(ang)
-            uart.send(f"OK steer {ang}")
-        elif cmd.lower() in ("distance?","dist?"):
-            d = sonic.distance_cm()
-            if d: uart.send(f"DIST:{d:.2f}cm")
-            else: uart.send("DIST:ERR")
-        elif cmd.lower() == "report:on":
-            reporting = True
-            uart.send("REPORT:ON")
-        elif cmd.lower() == "report:off":
-            reporting = False
-            uart.send("REPORT:OFF")
+# --- FUNCIONES DE UTILIDAD ---
+
+def clamp_speed(v):
+    try:
+        v = float(v)
+    except:
+        return 80  # default
+    v = int(round(v))
+    if v < 0: v = 0
+    if v > 100: v = 100
+    return v
+
+def send_speed(ser, speed):
+    speed = clamp_speed(speed)
+    msg = f"S={speed}\n".encode("utf-8")
+    ser.write(msg)
+    ser.flush()
+    # print(">> SPEED:", speed) # Comentado para reducir ruido en el loop continuo
+
+VALID_SEL = {"A", "B", "X", "Y", "N"}
+def send_sel(ser, sel):
+    """Envía selección A/B/X/Y/N (una letra y \n)."""
+    sel = (sel or "N").strip()[:1].upper()
+    if sel not in VALID_SEL:
+        sel = "N"
+    ser.write(f"{sel}\n".encode("utf-8"))
+    ser.flush()
+    # print(">> SEL:", sel) # Comentado para reducir ruido en el loop continuo
+
+def enviarInfo(ser, velocidad, instruccion):
+    send_speed(ser, velocidad)
+    time.sleep(0.02)
+    send_sel(ser, instruccion)
+
+def serial_reader_thread(ser):
+    while True:
+        try:
+            data = ser.readline()
+            if data:
+                print("<<", data.decode(errors="ignore").strip())
+        except Exception as e:
+            print("Serial read error:", e)
+            time.sleep(0.2)
+
+def read_speed_from_file():
+    # Usaremos esta velocidad como la máxima base permitida (0-100)
+    if FILE.exists():
+        return clamp_speed(FILE.read_text().strip())
+    return 80
+
+# --- LÓGICA DE CONTROL CONTINUO (LX y LY) ---
+
+DEADZONE = 5000 # Umbral para considerar que el joystick se ha movido (ej. 5000/32767 ≈ 15%)
+MAX_JOY_VAL = 32767.0
+MAX_VELOCIDAD_BASE = read_speed_from_file() # Velocidad máxima del archivo
+
+def calcular_velocidad(valor_y):
+    """
+    Convierte el valor analógico del eje Y (-32767..32767) 
+    a velocidad (0..MAX_VELOCIDAD_BASE) por magnitud.
+    """
+    mag_y = abs(valor_y)
+    
+    # Aplicar zona muerta
+    if mag_y < DEADZONE:
+        return 0
+        
+    # Normalizar la velocidad de la zona muerta al máximo
+    velocidad_relativa = (mag_y - DEADZONE) / (MAX_JOY_VAL - DEADZONE)
+    
+    # Multiplicar por la velocidad máxima base
+    velocidad = int(round(MAX_VELOCIDAD_BASE * velocidad_relativa))
+    
+    return clamp_speed(velocidad)
+
+def calcular_instruccion(valor_x, valor_y):
+    """
+    Calcula la instrucción (X/Y/A/B/N) basada en X y Y.
+    
+    - Y < 0: Adelante (X)
+    - Y > 0: Atrás (Y)
+    - X < 0: Giro Izquierdo (A o B)
+    - X > 0: Giro Derecho (A o B)
+    - Cerca de 0: Parada (N)
+    """
+    
+    # Si estamos en la zona muerta de ambos ejes, la instrucción es N
+    if abs(valor_y) < DEADZONE and abs(valor_x) < DEADZONE:
+        return "N"
+        
+    # Si hay suficiente movimiento en Y (Avance/Retroceso)
+    if abs(valor_y) > DEADZONE:
+        # Aquí puedes implementar una lógica de mezcla si tu firmware lo permitiera.
+        # Ya que solo puedes enviar una instrucción, priorizamos el avance/retroceso.
+        # La instrucción A/B en este esquema podría ser usada para girar en su lugar
+        # del movimiento X/Y, pero seguiremos la convención básica:
+        
+        if valor_y < 0:
+            return "X" # Adelante
         else:
-            uart.send("UNKNOWN_CMD")
+            return "Y" # Atrás
+            
+    # Si Y está en la zona muerta, pero X no (Giro puro)
+    elif abs(valor_x) > DEADZONE:
+        if valor_x < 0:
+            # Giro a la izquierda (Motor A)
+            return "A" 
+        else:
+            # Giro a la derecha (Motor B)
+            return "B" 
+            
+    return "N"
 
-    if reporting and (time.time() - last_report) >= 1.0:
-        d = sonic.distance_cm()
-        if d: uart.send(f"DIST:{d:.2f}cm")
-        else: uart.send("DIST:ERR")
-        last_report = time.time()
+# --- MAIN CONTROLLER LOGIC ---
 
-    time.sleep(0.01)
+def cb_move_left_joystick(x, y):
+    """
+    Callback llamado continuamente por pyPS4Controller con los valores (lx, ly).
+    LX para dirección y LY para avance/retroceso.
+    """
+    
+    # 1. Calcular Velocidad (basado en Y)
+    velocidad = calcular_velocidad(y)
+    
+    # 2. Calcular Instrucción (basado en X e Y)
+    instruccion = calcular_instruccion(x, y)
+    
+    # 3. Enviar Comando y manejar la parada
+    if velocidad > 0 or instruccion != "N":
+        # Enviar movimiento o giro
+        enviarInfo(controller.ser, velocidad, instruccion)
+        controller._stopped = False # Reset flag de parada
+        print(f"JOY ({x},{y}) → V:{velocidad} I:{instruccion}", end='\r')
+    else:
+        # El joystick está centrado (instruccion N y velocidad 0)
+        if not hasattr(controller, '_stopped') or not controller._stopped:
+            enviarInfo(controller.ser, 0, "N")
+            controller._stopped = True
+            print("🛑 Joystick centrado. Motores detenidos.   ")
+    
+# --- OTROS CALLBACKS (R2) ---
+
+def cb_r2_press(value):
+    velocidad_max = 100
+    # Al presionar R2, sobrescribir la dirección a X (adelante) con velocidad max
+    enviarInfo(controller.ser, velocidad_max, "X") 
+    print(f"\n🚀 R2 presionado → velocidad {velocidad_max}%")
+    controller._stopped = False # Reset flag de parada
+
+def cb_r2_release():
+    # Al soltar R2, detener (0 velocidad y N instrucción)
+    enviarInfo(controller.ser, 0, "N") 
+    print("🛑 R2 liberado. Deteniendo motores.")
+    controller._stopped = True # Establecer flag de parada
+
+# --- FUNCIÓN PRINCIPAL ---
+
+def main():
+    global MAX_VELOCIDAD_BASE
+    
+    ser = serial.Serial(PORT, BAUD, timeout=0.2)
+    controller = MyController(interface="/dev/input/js0", connecting_using_ds4drv=False)
+    controller.ser = ser
+    controller._stopped = False 
+
+    threading.Thread(target=serial_reader_thread, args=(ser,), daemon=True).start()
+
+    # Parada inicial
+    enviarInfo(ser, 0, "N")
+    print("✅ Estado inicial: Motores detenidos. Esperando entrada del mando...")
+
+    # --- Registro de Callbacks ---
+
+    # Callback para movimiento continuo del joystick izquierdo (L3)
+    controller.register_callback('on_move_left_joystick', cb_move_left_joystick)
+
+    # Callbacks para R2
+    controller.register_callback('r2_press', cb_r2_press)
+    controller.register_callback('r2_release', cb_r2_release)
+
+    print("🎮 Escuchando mando PS4…")
+    try:
+        controller.start_listening()  # bloqueante
+    except KeyboardInterrupt:
+        print("\nSaliendo…")
+    finally:
+        # Aseguramos parada al salir
+        print("🔌 Enviando señal de parada final...")
+        enviarInfo(ser, 0, "N")
+        ser.close()
+        print("Proceso finalizado.")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,177 @@
+# model_a.py
+import time
+import threading
+import re
+
+SERVO_CENTER = 50         # recto
+FWD_PWM      = 70         # avance (ajústalo según tu chasis)
+TURN_PWM     = 70         # giro en sitio
+DIST_THRESH  = 25.0       # cm; dispara giro si distancia < umbral
+BASE_TURN_180_TIME = 1.20 # s para girar ~180° (calibrar en tu pista)
+
+class ModelA(threading.Thread):
+    """
+    Event 1 – Autonomous Obstacle Challenge
+    - Avanza solo.
+    - Al detectar obstáculo, gira 'angle_deg' en sitio.
+    - Permite ajustar 'angle_deg' en tiempo real con el PS4.
+    """
+    def __init__(self, serial_comm, ps4=None):
+        super().__init__(daemon=True)
+        self.ser  = serial_comm
+        self.ps4  = ps4
+        self._stop = threading.Event()
+
+        self.angle_deg = 180     # valor inicial (requerido por el enunciado)
+        self.min_deg   = 30
+        self.max_deg   = 180
+
+        # anti-rebote de detección
+        self._last_turn_ts = 0.0
+        self._turn_cooldown = 0.6  # s
+
+    # ---------- API pública ----------
+    def stop(self):
+        self._stop.set()
+        # freno seguro
+        try:
+            self.ser.send(f"0,0,{SERVO_CENTER}")
+        except Exception:
+            pass
+
+    # ---------- Helpers de movimiento ----------
+    def _drive_forward(self):
+        self.ser.send(f"{FWD_PWM},{FWD_PWM},{SERVO_CENTER}")
+
+    def _stop_motors(self):
+        self.ser.send(f"0,0,{SERVO_CENTER}")
+
+    def _turn_in_place(self, degrees: float):
+        """
+        Gira en sitio con M1=+PWM, M2=-PWM. El tiempo escala linealmente con los grados.
+        Calibra BASE_TURN_180_TIME para tu robot.
+        """
+        degrees = max(self.min_deg, min(self.max_deg, float(degrees)))
+        t = BASE_TURN_180_TIME * (degrees / 180.0)
+
+        # inicio giro
+        self.ser.send(f"{TURN_PWM},{-TURN_PWM},{SERVO_CENTER}")
+        t_end = time.time() + t
+        while not self._stop.is_set() and time.time() < t_end:
+            time.sleep(0.01)
+
+        # fin giro
+        self._stop_motors()
+
+    # ---------- Lectura no bloqueante de UART ----------
+    def _readline_any(self):
+        """
+        Intenta distintas firmas comunes de SerialComm para obtener una línea sin bloquear.
+        Devuelve '' si no hay nada disponible.
+        """
+        line = ""
+        for name in ("readline_nonblocking", "read_line", "readline", "read_nonblocking", "read"):
+            fn = getattr(self.ser, name, None)
+            if fn is None:
+                continue
+            try:
+                # intenta con timeout=0 si la firma lo permite
+                if "timeout" in getattr(fn, "__code__", type("c", (), {"co_varnames": ()})) .co_varnames:
+                    resp = fn(timeout=0.0)
+                else:
+                    resp = fn()
+                if not resp:
+                    return ""
+                if isinstance(resp, bytes):
+                    resp = resp.decode(errors="ignore")
+                return resp.strip()
+            except Exception:
+                return ""
+        return ""
+
+    def _obstacle_detected(self):
+        """
+        Acepta varios formatos:
+          - 'HIT' / 'OBSTACLE' / 'OBS=1' / 'OBS:1'
+          - 'DIST:nn' o 'D=nn' (cm). Dispara si nn < DIST_THRESH
+        """
+        s = self._readline_any()
+        if not s:
+            return False
+
+        s_up = s.upper()
+        if "HIT" in s_up or "OBSTACLE" in s_up:
+            return True
+        if "OBS" in s_up and ("1" in s_up or "TRUE" in s_up):
+            return True
+
+        # Busca distancia numérica
+        m = re.search(r"(DIST|D)\s*[:=]\s*([0-9]+(\.[0-9]+)?)", s_up)
+        if m:
+            try:
+                dist = float(m.group(2))
+                return dist < DIST_THRESH
+            except Exception:
+                return False
+        return False
+
+    # ---------- Ajuste de grados en tiempo real ----------
+    def _update_angle_from_ps4(self):
+        if self.ps4 is None:
+            return
+        try:
+            # lee estado (si el controlador requiere poll explícito)
+            self.ps4.update()
+        except Exception:
+            pass
+
+        try:
+            # L1 / R1 pasos de 10°
+            if getattr(self.ps4, "get_button", None):
+                if self.ps4.get_button("L1") == 1:
+                    self.angle_deg = max(self.min_deg, self.angle_deg - 10)
+                if self.ps4.get_button("R1") == 1:
+                    self.angle_deg = min(self.max_deg, self.angle_deg + 10)
+
+            # Stick derecho X -> 30°..180°
+            if getattr(self.ps4, "get_axis", None):
+                rx = self.ps4.get_axis("RX")  # -1..+1
+                if rx is not None:
+                    # mapear [-1,1] a [30,180]
+                    self.angle_deg = int(self.min_deg + (rx + 1) * 0.5 * (self.max_deg - self.min_deg))
+
+        except Exception:
+            pass
+
+    # ---------- Bucle principal ----------
+    def run(self):
+        print("[Model_A] Inicio: avance automático, giro al detectar obstáculo.")
+        # arranca limpio
+        self._stop_motors()
+        time.sleep(0.05)
+
+        try:
+            while not self._stop.is_set():
+                # 1) avanza
+                self._drive_forward()
+
+                # 2) lee UART por si hay obstáculo
+                hit = self._obstacle_detected()
+                now = time.time()
+
+                if hit and (now - self._last_turn_ts) > self._turn_cooldown:
+                    print(f"[Model_A] Obstáculo detectado → giro {self.angle_deg}°")
+                    # frena, espera breve, gira y retoma
+                    self._stop_motors()
+                    time.sleep(0.05)
+                    self._turn_in_place(self.angle_deg)
+                    self._last_turn_ts = time.time()
+
+                # 3) permitir cambiar grados en “tiempo real”
+                self._update_angle_from_ps4()
+
+                time.sleep(0.01)
+
+        finally:
+            self._stop_motors()
+            print("[Model_A] Fin.")

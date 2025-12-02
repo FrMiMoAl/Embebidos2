@@ -1,0 +1,21 @@
+
+# Dependencias principales del Smart Line Follower Dashboard
+
+# Framework de interfaz gráfica
+PyQt6>=6.4.0
+
+# Procesamiento de video e imágenes
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# Cliente SSH para Raspberry Pi (opcional)
+paramiko>=3.0.0
+
+# Generación de imágenes placeholder (opcional)
+Pillow>=9.5.0
+
+# Comunicación serial con Arduino/controladores (opcional)
+pyserial>=3.5
+
+# Monitoreo de red (opcional)
+psutil>=5.9.0

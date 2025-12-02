@@ -1,0 +1,28 @@
+{
+    "colors": {
+        "background": "#10232A",
+        "panel": "#3D4D55",
+        "text": "#D3C3B9",
+        "accent": "#B58863",
+        "secondary": "#A79E9C",
+        "black": "#18161B"
+    },
+    "images": {
+        "background_login": "assets/bg_login.jpg",
+        "background_main": "assets/bg_main.jpg",
+        "camera_placeholder": "assets/camera_placeholder.jpg",
+        "arrow_up": "assets/arrow_up.png",
+        "arrow_down": "assets/arrow_down.png",
+        "arrow_left": "assets/arrow_left.png",
+        "arrow_right": "assets/arrow_right.png",
+        "arrow_up_active": "assets/arrow_up_active.png",
+        "arrow_down_active": "assets/arrow_down_active.png",
+        "arrow_left_active": "assets/arrow_left_active.png",
+        "arrow_right_active": "assets/arrow_right_active.png",
+        "function1": "assets/func1.png",
+        "function2": "assets/func2.png",
+        "function3": "assets/func3.png",
+        "function4": "assets/func4.png",
+        "icon": "assets/icon.png"
+    }
+}
