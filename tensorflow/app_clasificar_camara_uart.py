@@ -4,7 +4,7 @@ from comunicacion_uart import ComunicacionUART
 
 # Configuración
 RUTA_MODELO = 'modelo_marcadores.h5'
-CLASES = ['azul', 'borrador', 'negro', 'rojo']  # Ajustar según tu dataset
+CLASES = ['marcador azul', 'borrador', 'marcador negro', 'marcador rojo']  # Ajustar según tu dataset
 TAMAÑO_IMAGEN = (256, 256)
 CAMARA = 0
 PUERTO_SERIAL = '/dev/ttyUSB0'  # Cambiar según tu sistema

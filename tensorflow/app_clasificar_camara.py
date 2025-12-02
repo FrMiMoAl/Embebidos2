@@ -2,7 +2,7 @@ from manejador_camara import ManejadorCamara
 from clasificador_tiempo_real import ClasificadorTiempoReal
 
 # Configuración
-RUTA_MODELO = 'modelo_marcadores.h5'
+RUTA_MODELO = '/home/samuel/picoraspberry/Embebidos2/tensorflow/model.h5'
 CLASES = ['azul', 'borrador', 'negro', 'rojo']  # Ajustar según tu dataset
 TAMAÑO_IMAGEN = (256, 256)
 CAMARA = 0
