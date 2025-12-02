@@ -15,7 +15,7 @@ def main():
     try:
         # Inicializar componentes
         clasificador = ClasificadorTiempoReal(RUTA_MODELO, CLASES, TAMAÑO_IMAGEN)
-        camara = ManejadorCamara(CAMARA)
+        camara = ManejadorCamara(0)
         
         print("\n✓ Sistema listo")
         print("Presiona 'q' o ESC para salir\n")
