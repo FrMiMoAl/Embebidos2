@@ -1,0 +1,70 @@
+import json, time, serial
+from serial.tools import list_ports
+
+BAUD = 115200
+
+def checksum(payload: str) -> int:
+    return sum(payload.encode("utf-8")) & 0xFF
+
+def send_frame(ser, msg_type: str, data: dict):
+    payload = json.dumps(data, separators=(",", ":"))
+    ck = checksum(payload)
+    line = f"{msg_type}|{payload}|{ck:02X}\n".encode("utf-8")
+    ser.write(line)
+
+def find_pico_port():
+    # intenta encontrar “Pico” en la descripción
+    ports = list(list_ports.comports())
+    for p in ports:
+        desc = (p.description or "").lower()
+        hwid = (p.hwid or "").lower()
+        if "pico" in desc or "rp2" in desc or "raspberry" in desc:
+            return p.device
+    # fallback: si solo hay 1 COM, úsalo
+    if len(ports) == 1:
+        return ports[0].device
+    return None
+
+def cmd(ser, **d):
+    base = {"mode":"teleop","vx":0,"vy":0,"w":0,"s1":90,"s2":90,"stop":0}
+    base.update(d)
+    send_frame(ser, "CMD", base)
+
+def read_lines(ser, seconds=0.5):
+    t_end = time.time() + seconds
+    while time.time() < t_end:
+        line = ser.readline().decode("utf-8", errors="ignore").strip()
+        if line:
+            print("RX:", line)
+
+def step(ser, name, vx, vy, w, secs=1.0):
+    print(f"\n== {name} ==")
+    cmd(ser, stop=0, vx=vx, vy=vy, w=w)
+    read_lines(ser, secs)
+    cmd(ser, stop=1, vx=0, vy=0, w=0)
+    time.sleep(0.3)
+
+def main():
+    port = find_pico_port()
+    if not port:
+        raise SystemExit("No pude detectar la Pico. Revisa que aparezca un COM en Device Manager.")
+    print("Usando puerto:", port)
+
+    ser = serial.Serial(port, BAUD, timeout=0.1)
+
+    cmd(ser, stop=1)
+    time.sleep(0.3)
+
+    step(ser, "FORWARD",  25, 0, 0, 1.2)
+    step(ser, "BACK",    -25, 0, 0, 1.2)
+    step(ser, "STRAFE RIGHT", 0, 25, 0, 1.2)
+    step(ser, "STRAFE LEFT",  0,-25, 0, 1.2)
+    step(ser, "ROTATE CW",    0, 0, 25, 1.2)
+    step(ser, "ROTATE CCW",   0, 0,-25, 1.2)
+
+    cmd(ser, stop=1)
+    ser.close()
+    print("\n✅ Done.")
+
+if __name__ == "__main__":
+    main()
