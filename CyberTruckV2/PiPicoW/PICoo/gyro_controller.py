@@ -4,7 +4,7 @@ from machine import I2C, Pin
 
 class GyroController:
     """
-    MPU-6050 yaw aproximado integrando gyro Z.
+    MPU-6050 roll aproximado integrando gyro X.
     OJO: deriva con el tiempo (normal), pero sirve para estabilización básica.
     """
     def __init__(self, i2c_id=1, scl=27, sda=26, freq=400000, addr=0x68):
@@ -19,8 +19,8 @@ class GyroController:
         self.i2c.writeto_mem(self.addr, 0x1B, b"\x00")
         self.scale = 131.0  # LSB/(deg/s) para ±250
 
-        self.yaw = 0.0
-        self.bias_gz = 0.0
+        self.roll = 0.0
+        self.bias_gx = 0.0
         self._last = time.ticks_ms()
         self._calibrate()
 
@@ -32,29 +32,29 @@ class GyroController:
             val = -((65535 - val) + 1)
         return val
 
-    def _read_gz_dps(self):
-        gz = self._read_i16(0x47)  # GYRO_ZOUT_H
-        return gz / self.scale
+    def _read_gx_dps(self):
+        gx = self._read_i16(0x43)  # GYRO_XOUT_H
+        return gx / self.scale
 
     def _calibrate(self, samples=200):
         acc = 0.0
         for _ in range(samples):
-            acc += self._read_gz_dps()
+            acc += self._read_gx_dps()
             time.sleep_ms(5)
-        self.bias_gz = acc / samples
+        self.bias_gx = acc / samples
 
     def update(self):
         now = time.ticks_ms()
         dt = time.ticks_diff(now, self._last) / 1000.0
         self._last = now
 
-        gz = self._read_gz_dps() - self.bias_gz
-        self.yaw += gz * dt
+        gx = self._read_gx_dps() - self.bias_gx
+        self.roll += gx * dt
 
         # wrap opcional
-        if self.yaw > 180:
-            self.yaw -= 360
-        elif self.yaw < -180:
-            self.yaw += 360
+        if self.roll > 180:
+            self.roll -= 360
+        elif self.roll < -180:
+            self.roll += 360
 
-        return round(self.yaw, 2)
+        return round(self.roll, 2)

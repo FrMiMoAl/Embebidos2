@@ -10,10 +10,10 @@ class Config:
     # Formato: (IN1, IN2, PWM, invert)
     # OJO: FL/FR/RL/RR puede requerir re-mapeo según tu cableado real
     MOTORS = {
-        "FL": (7, 8, 6,  False),  # Motor A: AIN1=GP7, AIN2=GP8, PWMA=GP6
-        "FR": (3, 4, 2,  True),   # Motor B: BIN1=GP3, BIN2=GP4, PWMB=GP2
-        "RL": (13, 14, 15, False),# Motor C: CIN1=GP13, CIN2=GP14, PWMC=GP15
-        "RR": (11, 12, 10, True), # Motor D: DIN1=GP11, DIN2=GP12, PWMD=GP10
+        "FL": (4, 3, 2,  False),  # Motor 1: AIN1=GP7, AIN2=GP8, PWMA=GP6
+        "FR": (8, 7, 6,  False),   # Motor 2: BIN1=GP3, BIN2=GP4, PWMB=GP2
+        "RL": (12, 11, 10, False), # Motor 3: CIN1=GP13, CIN2=GP14, PWMC=GP15
+        "RR": (13, 14, 15, False),  # Motor 4: DIN1=GP11, DIN2=GP12, PWMD=GP10
     }
 
     MOTOR_PWM_FREQ = 1000

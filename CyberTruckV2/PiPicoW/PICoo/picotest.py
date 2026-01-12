@@ -1,58 +1,106 @@
-import json
+# main.py — Test autónomo de motores (L298N) usando Config.py
+from machine import Pin, PWM
 import time
-import serial
+from config import Config
 
-PORT = "COM4"      # <-- CAMBIA ESTO
-BAUD = 115200
+# =======================
+# CLASE MOTOR L298N
+# =======================
+class Motor:
+    def __init__(self, in1, in2, pwm_pin, invert=False):
+        self.in1 = Pin(in1, Pin.OUT, value=0)
+        self.in2 = Pin(in2, Pin.OUT, value=0)
+        self.pwm = PWM(Pin(pwm_pin))
+        self.pwm.freq(Config.MOTOR_PWM_FREQ)
+        self.pwm.duty_u16(0)
+        self.invert = invert
 
-def checksum(payload: str) -> int:
-    return sum(payload.encode("utf-8")) & 0xFF
+    def _apply(self, forward, duty):
+        duty = max(0, min(65535, duty))
+        if self.invert:
+            forward = not forward
+        if forward:
+            self.in1.value(1)
+            self.in2.value(0)
+        else:
+            self.in1.value(0)
+            self.in2.value(1)
+        self.pwm.duty_u16(duty)
 
-def send_frame(ser, msg_type: str, data: dict):
-    payload = json.dumps(data, separators=(",", ":"))
-    ck = checksum(payload)
-    line = f"{msg_type}|{payload}|{ck:02X}\n".encode("utf-8")
-    ser.write(line)
+    def forward(self, duty=40000):
+        self._apply(True, duty)
 
-def read_lines(ser, seconds=0.6):
-    t_end = time.time() + seconds
-    while time.time() < t_end:
-        line = ser.readline().decode("utf-8", errors="ignore").strip()
-        if line:
-            print("RX:", line)
+    def reverse(self, duty=40000):
+        self._apply(False, duty)
 
-def cmd(ser, **d):
-    # defaults
-    base = {"mode":"teleop", "vx":0, "vy":0, "w":0, "s1":90, "s2":90, "stop":0}
-    base.update(d)
-    send_frame(ser, "CMD", base)
+    def brake(self):
+        self.in1.value(1)
+        self.in2.value(1)
+        self.pwm.duty_u16(0)
 
-def step(ser, name, vx, vy, w, secs=1.0):
-    print(f"\n== {name} ==")
-    cmd(ser, stop=0, vx=vx, vy=vy, w=w)
-    read_lines(ser, secs)
-    cmd(ser, stop=1, vx=0, vy=0, w=0)
-    time.sleep(0.3)
+    def stop(self):
+        self.in1.value(0)
+        self.in2.value(0)
+        self.pwm.duty_u16(0)
 
-def main():
-    ser = serial.Serial(PORT, BAUD, timeout=0.1)
-    print("Abierto:", ser.name)
 
-    # stop inicial
-    cmd(ser, stop=1)
-    time.sleep(0.3)
+# =======================
+# UTILIDADES
+# =======================
+def led_blink(n=3, t=0.1):
+    try:
+        led = Pin("LED", Pin.OUT)
+        for _ in range(n):
+            led.on(); time.sleep(t)
+            led.off(); time.sleep(t)
+    except:
+        pass
 
-    # Secuencia
-    step(ser, "FORWARD",  25, 0, 0, secs=1.2)
-    step(ser, "BACK",    -25, 0, 0, secs=1.2)
-    step(ser, "STRAFE RIGHT", 0, 25, 0, secs=1.2)
-    step(ser, "STRAFE LEFT",  0,-25, 0, secs=1.2)
-    step(ser, "ROTATE CW",    0, 0, 25, secs=1.2)
-    step(ser, "ROTATE CCW",   0, 0,-25, secs=1.2)
 
-    print("\n✅ Terminado")
-    cmd(ser, stop=1)
-    ser.close()
+# =======================
+# SECUENCIA DE PRUEBA
+# =======================
+def test_motors():
+    led_blink()
+    motors = {}
+    for name, (in1, in2, pwm, inv) in Config.MOTORS.items():
+        motors[name] = Motor(in1, in2, pwm, inv)
 
+    duty = 45000
+    delay = 1.5
+
+    for i in range(3):
+        print(f"🔹 Ciclo {i+1}/3: Avance")
+        for m in motors.values():
+            m.forward(duty)
+        time.sleep(delay)
+
+        print("🔹 Freno")
+        for m in motors.values():
+            m.brake()
+        time.sleep(0.6)
+
+        print("🔹 Reversa")
+        for m in motors.values():
+            m.reverse(duty)
+        time.sleep(delay)
+
+        print("🔹 Freno")
+        for m in motors.values():
+            m.brake()
+        time.sleep(0.6)
+
+    # Detener todo
+    for m in motors.values():
+        m.stop()
+    print("✅ Prueba completada")
+    while True:
+        led_blink(n=1, t=0.15)
+        time.sleep(0.7)
+
+
+# =======================
+# EJECUCIÓN PRINCIPAL
+# =======================
 if __name__ == "__main__":
-    main()
+    test_motors()
