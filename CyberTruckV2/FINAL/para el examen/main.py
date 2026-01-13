@@ -1,55 +1,148 @@
+# main_pico.py — RC Ambulance Pico listo para Jetson (teleop/auto + smoothing + failsafe brake)
+import time
 from config import Config
 from protocol import UARTProtocol
 from sensors import Ultrasonido
-from actuators import OmniDrive, Servo
 from gyro_controller import GyroController
-import time
+from omni_drive import motors_from_config, OmniDrive
 
-def now_ms():
+from machine import Pin, PWM
+
+# ---------------- Servo helper ----------------
+class Servo:
+    def __init__(self, pin, min_us=500, max_us=2500, freq=50):
+        self.pwm = PWM(Pin(pin))
+        self.pwm.freq(freq)
+        self.period_us = int(1_000_000 / freq)
+        self.min_us = int(min_us)
+        self.max_us = int(max_us)
+        self._us = (self.min_us + self.max_us) // 2
+        self.write_us(self._us)
+
+    def _clamp(self, x, a, b):
+        return a if x < a else b if x > b else x
+
+    def write_us(self, us):
+        us = int(self._clamp(us, self.min_us, self.max_us))
+        duty = int(us * 65535 / self.period_us)
+        self.pwm.duty_u16(duty)
+
+    def set_angle(self, deg):
+        deg = self._clamp(float(deg), 0.0, 180.0)
+        us = self.min_us + (self.max_us - self.min_us) * (deg / 180.0)
+        self.write_us(us)
+
+
+def clamp(x, a, b):
+    return a if x < a else b if x > b else x
+
+def approach(cur, target, step):
+    # limita cuánto puede cambiar por ciclo (slew-rate limiter)
+    if target > cur:
+        return min(cur + step, target)
+    if target < cur:
+        return max(cur - step, target)
+    return cur
+
+
+def main():
+    uart = UARTProtocol(Config.UART_ID, Config.UART_BAUDRATE, Config.UART_TX_PIN, Config.UART_RX_PIN)
+
+    # Sensores
+    usonic = Ultrasonido(Config.TRIG_PIN, Config.ECHO_PIN, timeout_us=Config.US_TIMEOUT_US)
+
+    # Motores (según tu omni_drive.py)
+    FL, FR, RL, RR = motors_from_config()
+    drive = OmniDrive(FL, FR, RL, RR)
+
+    # IMU (si falla, seguimos sin yaw)
+    gyro = None
     try:
-        return time.ticks_ms()
-    except AttributeError:
-        return int(time.time() * 1000)
+        gyro = GyroController(
+            i2c_id=Config.I2C_ID,
+            scl=Config.IMU_SCL,
+            sda=Config.IMU_SDA,
+            freq=Config.I2C_FREQ
+        )
+    except Exception as e:
+        print("⚠️ IMU no disponible:", e)
 
-# Inicialización
-uart = UARTProtocol(Config.UART_ID, Config.UART_BAUDRATE, Config.TX_PIN, Config.RX_PIN)
-uart.last_heartbeat = now_ms()
-sensor_us = Ultrasonido(Config.TRIG_PIN, Config.ECHO_PIN)
-chassis = OmniDrive(Config.MOTORS)
-gyro = GyroController(scl=Config.IMU_SCL, sda=Config.IMU_SDA)
+    # Servos
+    servo1 = Servo(Config.SERVO1_PIN, Config.SERVO_MIN_US, Config.SERVO_MAX_US)
+    servo2 = Servo(Config.SERVO2_PIN, Config.SERVO_MIN_US, Config.SERVO_MAX_US)
+    servo1.set_angle(90)
+    servo2.set_angle(90)
 
-# Gimbal (2 Servos)
-gimbal_pan = Servo(Config.SERVO_PAN_PIN)
-gimbal_tilt = Servo(Config.SERVO_TILT_PIN)
+    # Estado
+    mode = "teleop"  # teleop/auto
+    vx_t = vy_t = w_t = 0          # targets
+    vx = vy = w = 0                # comandos suavizados
 
-print("Robot Omni-Gimbal listo...")
+    # Ajustes de suavizado (sube/baja según tu chasis)
+    SLEW_V = 8     # max cambio por ciclo para vx/vy
+    SLEW_W = 10    # max cambio por ciclo para w
 
-while True:
-    # 1. Leer Sensores y enviar por UART
-    dist = sensor_us.distancia_cm()
-    yaw = gyro.update()
-    uart.send("TELEMETRY", {"dist": dist, "yaw": yaw})
-    
-    # 2. Recibir Comandos
-    # El comando esperado es: CMD|{"vx":50, "vy":0, "w":0, "pan":90, "tilt":45}|CHECKSUM
-    msg = uart.receive()
-    if msg and msg.get("type") == "CMD":
-        data = msg.get("data", {})
-        # actualizar heartbeat al recibir comando
-        uart.last_heartbeat = now_ms()
-        
-        # Control de movimiento
-        vx = data.get("vx", 0)
-        vy = data.get("vy", 0)
-        w = data.get("w", 0)
-        chassis.drive_complex(vx, vy, w)
-        
-        # Control de Gimbal (Los 2 ángulos adicionales)
-        if "pan" in data: gimbal_pan.set_angle(data["pan"])
-        if "tilt" in data: gimbal_tilt.set_angle(data["tilt"])
-        
-    # 3. Seguridad: Stop si se pierde la conexión (2 segundos sin datos)
-    if now_ms() - uart.last_heartbeat > 2000:
-        chassis.stop()
-        
-    time.sleep(Config.LOOP_DELAY)
+    # Telemetría
+    tel_hz = 10
+    tel_period_ms = int(1000 / tel_hz)
+    last_tel = time.ticks_ms()
+
+    print("✅ Pico listo (UART + OmniDrive + Servos + US + IMU opcional).")
+
+    while True:
+        # -------- RX --------
+        msg = uart.recv()
+        if msg and msg["type"] == "CMD":
+            d = msg["data"]
+
+            # modo (acordado)
+            if "mode" in d:
+                mode = d["mode"]
+
+            # setpoints
+            vx_t = int(d.get("vx", 0))
+            vy_t = int(d.get("vy", 0))
+            w_t  = int(d.get("w",  0))
+
+            # servos
+            if "s1" in d: servo1.set_angle(d["s1"])
+            if "s2" in d: servo2.set_angle(d["s2"])
+
+            # e-stop
+            if int(d.get("stop", 0)) == 1:
+                vx_t = vy_t = w_t = 0
+                drive.brake()
+
+        # -------- FAILSAFE --------
+        if not uart.link_alive(Config.FAILSAFE_MS):
+            vx_t = vy_t = w_t = 0
+            drive.brake()  # más seguro que coast
+
+        # -------- SUAVIZADO (setpoints suaves) --------
+        vx = approach(vx, vx_t, SLEW_V)
+        vy = approach(vy, vy_t, SLEW_V)
+        w  = approach(w,  w_t,  SLEW_W)
+
+        drive.drive(vx, vy, w)
+
+        # -------- TELEMETRÍA --------
+        now = time.ticks_ms()
+        if time.ticks_diff(now, last_tel) >= tel_period_ms:
+            last_tel = now
+
+            dist = usonic.distancia_cm()
+            yaw = gyro.update() if gyro else None
+
+            uart.send("TEL", {
+                "mode": mode,
+                "vx": vx, "vy": vy, "w": w,
+                "dist_cm": dist,
+                "yaw_deg": yaw,
+                "link_ms": time.ticks_diff(time.ticks_ms(), uart.last_rx_ms)
+            })
+
+        time.sleep(Config.LOOP_DELAY)
+
+
+if __name__ == "__main__":
+    main()
